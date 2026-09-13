@@ -1,0 +1,17 @@
+# Multi-network fixture used by config_test.go. Deliberately has two networks whose
+# fields differ in every position, so a test resolving "esmeralda" fails obviously if it
+# accidentally picks up "localnet"'s values (or vice versa).
+
+active_network = "esmeralda"
+postgres_dsn = "postgres://file-user:file-pass@file-host:5432/file_db?sslmode=disable"
+http_listen_addr = ":9090"
+
+[networks.esmeralda]
+indexer_rest_base_url = "https://esmeralda.indexer.example:18300"
+validator_jsonrpc_urls = ["https://esmeralda.vn1.example:18200/json_rpc", "https://esmeralda.vn2.example:18200/json_rpc"]
+l1_base_node_grpc_hosts = ["esmeralda.basenode1.example:18142", "esmeralda.basenode2.example:18142"]
+
+[networks.localnet]
+indexer_rest_base_url = "http://127.0.0.1:18300"
+validator_jsonrpc_urls = ["http://127.0.0.1:18200/json_rpc"]
+l1_base_node_grpc_hosts = ["127.0.0.1:18142"]
