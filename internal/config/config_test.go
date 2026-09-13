@@ -34,6 +34,9 @@ func TestLoad_DefaultsToLocalDevLocalnet(t *testing.T) {
 	if want := []string{DefaultLocalnetL1BaseNodeGRPCHost}; !reflect.DeepEqual(cfg.Network.L1BaseNodeGRPCHosts, want) {
 		t.Errorf("L1BaseNodeGRPCHosts = %v, want %v", cfg.Network.L1BaseNodeGRPCHosts, want)
 	}
+	if cfg.Network.MetadataServerURL != "" {
+		t.Errorf("MetadataServerURL = %q, want \"\" (no hardcoded local-dev default - see AGENTS.md's standing rule)", cfg.Network.MetadataServerURL)
+	}
 }
 
 // TestLoad_PrecedenceFlagOverEnvOverFileOverDefault is requirement (a): for a single
@@ -106,6 +109,9 @@ func TestLoad_MultiNetworkFixtureResolvesRequestedNetwork(t *testing.T) {
 		if !reflect.DeepEqual(cfg.Network.L1BaseNodeGRPCHosts, wantHosts) {
 			t.Errorf("L1BaseNodeGRPCHosts = %v, want %v", cfg.Network.L1BaseNodeGRPCHosts, wantHosts)
 		}
+		if want := "https://esmeralda.metadata.example/community-templates"; cfg.Network.MetadataServerURL != want {
+			t.Errorf("MetadataServerURL = %q, want %q", cfg.Network.MetadataServerURL, want)
+		}
 		// Global fields still come from the file's top level, unaffected by which
 		// network was requested.
 		if want := ":9090"; cfg.HTTPListenAddr != want {
@@ -127,6 +133,9 @@ func TestLoad_MultiNetworkFixtureResolvesRequestedNetwork(t *testing.T) {
 		wantVNs := []string{"http://127.0.0.1:18200/json_rpc"}
 		if !reflect.DeepEqual(cfg.Network.ValidatorJSONRPCURLs, wantVNs) {
 			t.Errorf("ValidatorJSONRPCURLs = %v, want %v", cfg.Network.ValidatorJSONRPCURLs, wantVNs)
+		}
+		if want := "http://127.0.0.1:18500/community-templates"; cfg.Network.MetadataServerURL != want {
+			t.Errorf("MetadataServerURL = %q, want %q", cfg.Network.MetadataServerURL, want)
 		}
 	})
 

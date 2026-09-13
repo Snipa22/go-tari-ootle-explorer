@@ -106,7 +106,7 @@ func TestMigrate_AppliesCleanlyAgainstRealPostgres(t *testing.T) {
 		}
 	}
 
-	for _, version := range []string{"0001_init", "0002_template_registry_correction", "0003_burn_claims_correction"} {
+	for _, version := range []string{"0001_init", "0002_template_registry_correction", "0003_burn_claims_correction", "0004_template_registry_metadata_server_fields"} {
 		var got string
 		if err := database.Pool.QueryRow(ctx, `SELECT version FROM schema_migrations WHERE version = $1`, version).Scan(&got); err != nil {
 			t.Fatalf("expected schema_migrations to record %s: %v", version, err)
@@ -372,5 +372,161 @@ func TestBurnClaimRowMethods_AgainstRealPostgres(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Errorf("remaining pending = %d, want 0", len(remaining))
+	}
+}
+
+// TestUpsertTemplateRegistryMetadata_MergesWithoutClobberingOtherSourcesFields is the
+// real, live-Postgres proof DISPATCH_BRIEF.md (step 6) asks for: internal/explorer's
+// UpsertTemplateRegistryEntry (source A, from the indexer's own template catalogue)
+// and internal/registry's UpsertTemplateRegistryMetadata (source B, from the
+// community template-metadata server) write the SAME template_registry row keyed on
+// template_address, from two independent upstream sources with different field
+// coverage - this proves B upserting the metadata-server-only fields does not
+// clobber A's core catalogue fields, and a later A upsert does not null out B's
+// metadata-server-only fields either (since UpsertTemplateRegistryEntry's SQL never
+// references those columns at all - see that method's doc comment).
+//
+// Gated behind a reachable real Postgres exactly like this file's other live tests -
+// SKIPS rather than failing the suite or fabricating a pass.
+func TestUpsertTemplateRegistryMetadata_MergesWithoutClobberingOtherSourcesFields(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = "postgres://tari_ootle_explorer:tari_ootle_explorer@localhost:5432/tari_ootle_explorer?sslmode=disable"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	database, err := Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("SKIP: no reachable Postgres to test real upsert merge semantics against (tried %s): %v", dsn, err)
+	}
+	defer database.Close()
+
+	if _, err := database.Pool.Exec(ctx, `DROP TABLE IF EXISTS schema_migrations, ootle_blocks, validators, burn_claims, template_registry CASCADE`); err != nil {
+		t.Fatalf("cleanup before test: %v", err)
+	}
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	const addr = "0bd8d5844741b0a76fa113f6bcd63121150961ae13c61bc4b18d92a63b98d303"
+
+	// Source A (internal/explorer, from the indexer's REST /templates/catalogue):
+	// writes only the core catalogue fields - has no concept of
+	// author_friendly_name/code_size/is_featured/metadata/definition at all.
+	if err := database.UpsertTemplateRegistryEntry(ctx, TemplateRegistryEntry{
+		TemplateAddress: addr,
+		TemplateName:    "TariStableCoin",
+		AuthorPublicKey: "3c6eebdcb2939ebad646a9d464874005aa979f1e575b72cd2a690289f10e5e50",
+		BinaryHash:      "2baac65d72f75cf7e0de433c7cab1d14d162f3c7249795c0d9add0dde59c9ce2",
+		AtEpoch:         9013,
+	}); err != nil {
+		t.Fatalf("UpsertTemplateRegistryEntry() [source A] error = %v", err)
+	}
+
+	// Source B (internal/registry, from the community metadata server): a real
+	// live-shaped partial upsert - metadata_hash/author_friendly_name are nil (both
+	// genuinely null on this template, per the live fixture), definition is nil
+	// (this is the /featured route's shape, not the per-address route), but
+	// code_size/is_featured/metadata are real, non-nil values.
+	codeSize := int64(157535)
+	isFeatured := true
+	metadataJSON := []byte(`{"name":"tari-stablecoin-minimal","version":"0.1.0","tags":["token","fungible","defi","stablecoin"],"category":"token"}`)
+	if err := database.UpsertTemplateRegistryMetadata(ctx, TemplateRegistryMetadataEntry{
+		TemplateAddress: addr,
+		CodeSize:        &codeSize,
+		IsFeatured:      &isFeatured,
+		Metadata:        metadataJSON,
+	}); err != nil {
+		t.Fatalf("UpsertTemplateRegistryMetadata() [source B, partial] error = %v", err)
+	}
+
+	var gotName, gotAuthor, gotBinaryHash string
+	var gotAtEpoch int64
+	var gotCodeSize *int64
+	var gotIsFeatured bool
+	var gotMetadata []byte
+	err = database.Pool.QueryRow(ctx,
+		`SELECT template_name, author_public_key, binary_hash, at_epoch, code_size, is_featured, metadata
+		 FROM template_registry WHERE template_address = $1`, addr,
+	).Scan(&gotName, &gotAuthor, &gotBinaryHash, &gotAtEpoch, &gotCodeSize, &gotIsFeatured, &gotMetadata)
+	if err != nil {
+		t.Fatalf("query merged row: %v", err)
+	}
+
+	// Source A's core fields must have survived source B's partial upsert untouched.
+	if gotName != "TariStableCoin" {
+		t.Errorf("template_name = %q, want TariStableCoin (source A's value clobbered)", gotName)
+	}
+	if gotAuthor != "3c6eebdcb2939ebad646a9d464874005aa979f1e575b72cd2a690289f10e5e50" {
+		t.Errorf("author_public_key = %q (source A's value clobbered)", gotAuthor)
+	}
+	if gotAtEpoch != 9013 {
+		t.Errorf("at_epoch = %d, want 9013 (source A's value clobbered)", gotAtEpoch)
+	}
+	// Source B's own fields must have been applied.
+	if gotCodeSize == nil || *gotCodeSize != 157535 {
+		t.Errorf("code_size = %v, want 157535 (source B's value not applied)", gotCodeSize)
+	}
+	if !gotIsFeatured {
+		t.Errorf("is_featured = false, want true (source B's value not applied)")
+	}
+	if len(gotMetadata) == 0 {
+		t.Errorf("metadata = %q, want the real metadata JSON blob (source B's value not applied)", gotMetadata)
+	}
+
+	// A subsequent source A upsert (e.g. explorer re-walking the catalogue) must NOT
+	// null out source B's metadata-server-only fields - UpsertTemplateRegistryEntry's
+	// SQL never references those columns at all.
+	if err := database.UpsertTemplateRegistryEntry(ctx, TemplateRegistryEntry{
+		TemplateAddress: addr,
+		TemplateName:    "TariStableCoin",
+		AuthorPublicKey: "3c6eebdcb2939ebad646a9d464874005aa979f1e575b72cd2a690289f10e5e50",
+		BinaryHash:      "2baac65d72f75cf7e0de433c7cab1d14d162f3c7249795c0d9add0dde59c9ce2",
+		AtEpoch:         9014, // simulate a re-observation at a later epoch
+	}); err != nil {
+		t.Fatalf("UpsertTemplateRegistryEntry() [source A, re-observed] error = %v", err)
+	}
+	err = database.Pool.QueryRow(ctx,
+		`SELECT at_epoch, code_size, is_featured, metadata FROM template_registry WHERE template_address = $1`, addr,
+	).Scan(&gotAtEpoch, &gotCodeSize, &gotIsFeatured, &gotMetadata)
+	if err != nil {
+		t.Fatalf("query row after re-observed source A upsert: %v", err)
+	}
+	if gotAtEpoch != 9014 {
+		t.Errorf("at_epoch = %d, want 9014 after a re-observed source A upsert", gotAtEpoch)
+	}
+	if gotCodeSize == nil || *gotCodeSize != 157535 {
+		t.Errorf("code_size = %v, want 157535 to survive source A's upsert (which never touches this column)", gotCodeSize)
+	}
+	if !gotIsFeatured {
+		t.Errorf("is_featured = false, want true to survive source A's upsert")
+	}
+	if len(gotMetadata) == 0 {
+		t.Errorf("metadata = %q, want the metadata JSON blob to survive source A's upsert", gotMetadata)
+	}
+
+	// Finally: a brand-new template_address internal/registry observes before
+	// internal/explorer ever does must insert cleanly with placeholder defaults for
+	// the NOT NULL catalogue columns, not fail the insert.
+	const newAddr = "0000000000000000000000000000000000000000000000000000000000000002"
+	newCodeSize := int64(324798)
+	if err := database.UpsertTemplateRegistryMetadata(ctx, TemplateRegistryMetadataEntry{
+		TemplateAddress: newAddr,
+		CodeSize:        &newCodeSize,
+	}); err != nil {
+		t.Fatalf("UpsertTemplateRegistryMetadata() [new template_address, partial] error = %v", err)
+	}
+	var newName, newAuthor, newBinaryHash string
+	var newAtEpoch int64
+	err = database.Pool.QueryRow(ctx,
+		`SELECT template_name, author_public_key, binary_hash, at_epoch FROM template_registry WHERE template_address = $1`, newAddr,
+	).Scan(&newName, &newAuthor, &newBinaryHash, &newAtEpoch)
+	if err != nil {
+		t.Fatalf("query newly-inserted row: %v", err)
+	}
+	if newName != "" || newAuthor != "" || newBinaryHash != "" || newAtEpoch != 0 {
+		t.Errorf("new row = name=%q author=%q binary_hash=%q at_epoch=%d, want all empty/0 placeholders", newName, newAuthor, newBinaryHash, newAtEpoch)
 	}
 }
