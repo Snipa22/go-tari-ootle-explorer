@@ -1,0 +1,30 @@
+{{define "content"}}
+<h2>Burn Claims</h2>
+<p class="empty-note">L1&rarr;L2 burn-claim tracker - every claim, regardless of status.</p>
+<div class="status-filters">
+    <a href="/burn-claims">All</a>
+    <a href="/burn-claims?status=pending">Pending</a>
+    <a href="/burn-claims?status=claimed">Claimed</a>
+    <a href="/burn-claims?status=stuck">Stuck</a>
+</div>
+<table>
+    <thead>
+    <tr><th>L1 Burn Tx Hash</th><th>Commitment</th><th>Burn Height</th><th>Claim Public Key</th><th>Claim Tx ID</th><th>Claimed At</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+    {{range .Claims}}
+    <tr>
+        <td>{{.L1BurnTxHash}}</td>
+        <td>{{.Commitment}}</td>
+        <td>{{.BurnHeight}}</td>
+        <td>{{.ClaimPublicKeyDisplay}}</td>
+        <td>{{.ClaimTxIDDisplay}}</td>
+        <td>{{.ClaimedAtDisplay}}</td>
+        <td class="status-{{.Status}}">{{.Status}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="7" class="empty-note">No burn claims{{if .StatusFilter}} with status "{{.StatusFilter}}"{{end}} observed yet.</td></tr>
+    {{end}}
+    </tbody>
+</table>
+{{end}}

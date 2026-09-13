@@ -1,0 +1,22 @@
+{{define "content"}}
+<h2>Validators</h2>
+<p class="empty-note">Full roster - one row per validator (most recently active first).</p>
+<table>
+    <thead>
+    <tr><th>Public Key</th><th>Last Seen Epoch</th><th>Shard Range</th><th>Consensus Status</th><th>Last Checked At</th></tr>
+    </thead>
+    <tbody>
+    {{range .Validators}}
+    <tr>
+        <td>{{.PublicKey}}</td>
+        <td>{{.LastSeenEpoch}}</td>
+        <td>{{.ShardRangeDisplay}}</td>
+        <td>{{.ConsensusStatusDisplay}}</td>
+        <td>{{.LastCheckedAtDisplay}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5" class="empty-note">No validators observed yet.</td></tr>
+    {{end}}
+    </tbody>
+</table>
+{{end}}

@@ -1,0 +1,71 @@
+{{define "content"}}
+<h2>Dashboard</h2>
+<p class="empty-note">Calm, liveness-focused view - see /blocks, /validators, /burn-claims, /templates for full history.</p>
+
+{{if .StuckBurnClaims}}
+<div class="stuck-banner">
+    <strong>{{len .StuckBurnClaims}} stuck burn claim(s)</strong> - pending longer than the configured age threshold with no matching L2 claim.
+    <table>
+        <thead><tr><th>L1 Burn Tx Hash</th><th>Commitment</th><th>Burn Height</th></tr></thead>
+        <tbody>
+        {{range .StuckBurnClaims}}
+        <tr><td>{{.L1BurnTxHash}}</td><td>{{.Commitment}}</td><td>{{.BurnHeight}}</td></tr>
+        {{end}}
+        </tbody>
+    </table>
+    <p><a href="/burn-claims?status=stuck">View all stuck claims &raquo;</a></p>
+</div>
+{{else if .StuckBurnClaimsError}}
+<p class="error-note">{{.StuckBurnClaimsError}}</p>
+{{end}}
+
+<div class="stat-grid">
+    <div class="stat-card">
+        {{if .ValidatorError}}
+        <div class="label">Validators</div>
+        <div class="error-note">{{.ValidatorError}}</div>
+        {{else}}
+        <div class="label">Validators seen in epoch {{.ValidatorSummary.Epoch}}</div>
+        <div class="value">{{.ValidatorSummary.Count}}</div>
+        {{end}}
+    </div>
+</div>
+
+<div class="panel">
+    <h3>Recent Blocks</h3>
+    {{if .BlocksError}}
+    <p class="error-note">{{.BlocksError}}</p>
+    {{else if not .Blocks}}
+    <p class="empty-note">No blocks observed yet.</p>
+    {{else}}
+    <table>
+        <thead><tr><th>Height</th><th>Epoch</th><th>Block ID</th><th>Observed At</th><th>Commands</th></tr></thead>
+        <tbody>
+        {{range .Blocks}}
+        <tr><td>{{.Height}}</td><td>{{.Epoch}}</td><td>{{.BlockID}}</td><td>{{.TimeString}}</td><td>{{.CommandCount}}</td></tr>
+        {{end}}
+        </tbody>
+    </table>
+    <p><a href="/blocks">View all blocks &raquo;</a></p>
+    {{end}}
+</div>
+
+<div class="panel">
+    <h3>Recent Template Publishes</h3>
+    {{if .TemplatesError}}
+    <p class="error-note">{{.TemplatesError}}</p>
+    {{else if not .Templates}}
+    <p class="empty-note">No templates observed yet.</p>
+    {{else}}
+    <table>
+        <thead><tr><th>Name</th><th>Address</th><th>Author</th><th>At Epoch</th><th>Featured</th></tr></thead>
+        <tbody>
+        {{range .Templates}}
+        <tr><td>{{.TemplateName}}</td><td>{{.TemplateAddress}}</td><td>{{.AuthorDisplay}}</td><td>{{.AtEpoch}}</td><td>{{.IsFeatured}}</td></tr>
+        {{end}}
+        </tbody>
+    </table>
+    <p><a href="/templates">View all templates &raquo;</a></p>
+    {{end}}
+</div>
+{{end}}
