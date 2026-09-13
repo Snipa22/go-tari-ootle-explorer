@@ -106,7 +106,7 @@ func TestMigrate_AppliesCleanlyAgainstRealPostgres(t *testing.T) {
 		}
 	}
 
-	for _, version := range []string{"0001_init", "0002_template_registry_correction"} {
+	for _, version := range []string{"0001_init", "0002_template_registry_correction", "0003_burn_claims_correction"} {
 		var got string
 		if err := database.Pool.QueryRow(ctx, `SELECT version FROM schema_migrations WHERE version = $1`, version).Scan(&got); err != nil {
 			t.Fatalf("expected schema_migrations to record %s: %v", version, err)
@@ -260,5 +260,117 @@ func TestUpsertValidatorHealth_MergesWithoutClobberingOtherSourcesFields(t *test
 	}
 	if newLastSeenEpoch != 0 || newShardStart != 0 || newShardEnd != 0 {
 		t.Errorf("new row = last_seen_epoch=%d shard=[%d,%d], want all 0 placeholders", newLastSeenEpoch, newShardStart, newShardEnd)
+	}
+}
+
+// TestBurnClaimRowMethods_AgainstRealPostgres is the real live-Postgres proof for
+// internal/burnclaim's Store methods (this dispatch, step 5): insert-if-new,
+// list-by-status, claim-by-commitment, and stuck-by-kernel-hash, including the
+// idempotent-re-insert and never-clobber-a-claimed-row guarantees those methods'
+// own doc comments promise. Gated behind a reachable real Postgres exactly like the
+// other tests in this file - SKIPS rather than failing the suite or fabricating a
+// pass.
+func TestBurnClaimRowMethods_AgainstRealPostgres(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = "postgres://tari_ootle_explorer:tari_ootle_explorer@localhost:5432/tari_ootle_explorer?sslmode=disable"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	database, err := Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("SKIP: no reachable Postgres to test real burn_claims row methods against (tried %s): %v", dsn, err)
+	}
+	defer database.Close()
+
+	if _, err := database.Pool.Exec(ctx, `DROP TABLE IF EXISTS schema_migrations, ootle_blocks, validators, burn_claims, template_registry CASCADE`); err != nil {
+		t.Fatalf("cleanup before test: %v", err)
+	}
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	b1 := BurnClaim{L1BurnTxHash: "kernel-aa", Commitment: "commit-aa", BurnHeight: 1000, Status: "pending"}
+	b2 := BurnClaim{L1BurnTxHash: "kernel-bb", Commitment: "commit-bb", BurnHeight: 2000, Status: "pending"}
+
+	if err := database.InsertPendingBurnClaim(ctx, b1); err != nil {
+		t.Fatalf("InsertPendingBurnClaim(b1): %v", err)
+	}
+	if err := database.InsertPendingBurnClaim(ctx, b2); err != nil {
+		t.Fatalf("InsertPendingBurnClaim(b2): %v", err)
+	}
+	// Re-inserting the same l1_burn_tx_hash must be a clean no-op, not a
+	// constraint-violation error - internal/burnclaim's scanner re-scans
+	// overlapping height ranges by design.
+	if err := database.InsertPendingBurnClaim(ctx, b1); err != nil {
+		t.Fatalf("InsertPendingBurnClaim(b1) [re-insert]: %v", err)
+	}
+
+	pending, err := database.ListBurnClaimsByStatus(ctx, "pending")
+	if err != nil {
+		t.Fatalf("ListBurnClaimsByStatus(pending): %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("len(pending) = %d, want 2 (re-insert must not duplicate)", len(pending))
+	}
+	// Ordered by burn_height ASC.
+	if pending[0].L1BurnTxHash != "kernel-aa" || pending[1].L1BurnTxHash != "kernel-bb" {
+		t.Errorf("pending order = [%s, %s], want [kernel-aa, kernel-bb] (ORDER BY burn_height ASC)", pending[0].L1BurnTxHash, pending[1].L1BurnTxHash)
+	}
+	if pending[0].ClaimPublicKey != nil {
+		t.Errorf("ClaimPublicKey = %v, want nil (never populated by the L1 scanner - see migration 0003's comment)", pending[0].ClaimPublicKey)
+	}
+
+	// Claim b1 by commitment.
+	claimedAt := time.Now().UTC().Truncate(time.Second)
+	if err := database.MarkBurnClaimed(ctx, "commit-aa", claimedAt); err != nil {
+		t.Fatalf("MarkBurnClaimed: %v", err)
+	}
+
+	claimed, err := database.ListBurnClaimsByStatus(ctx, "claimed")
+	if err != nil {
+		t.Fatalf("ListBurnClaimsByStatus(claimed): %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].L1BurnTxHash != "kernel-aa" {
+		t.Fatalf("claimed = %+v, want exactly [kernel-aa]", claimed)
+	}
+	if claimed[0].ClaimedAt == nil || !claimed[0].ClaimedAt.Equal(claimedAt) {
+		t.Errorf("ClaimedAt = %v, want %v", claimed[0].ClaimedAt, claimedAt)
+	}
+
+	// Mark b2 stuck.
+	if err := database.MarkBurnStuck(ctx, "kernel-bb"); err != nil {
+		t.Fatalf("MarkBurnStuck: %v", err)
+	}
+	stuck, err := database.ListBurnClaimsByStatus(ctx, "stuck")
+	if err != nil {
+		t.Fatalf("ListBurnClaimsByStatus(stuck): %v", err)
+	}
+	if len(stuck) != 1 || stuck[0].L1BurnTxHash != "kernel-bb" {
+		t.Fatalf("stuck = %+v, want exactly [kernel-bb]", stuck)
+	}
+
+	// MarkBurnStuck must never touch an already-claimed row, even if (hypothetically)
+	// called against it.
+	if err := database.MarkBurnStuck(ctx, "kernel-aa"); err != nil {
+		t.Fatalf("MarkBurnStuck(already-claimed): %v", err)
+	}
+	var statusAfter string
+	if err := database.Pool.QueryRow(ctx, `SELECT status FROM burn_claims WHERE l1_burn_tx_hash = $1`, "kernel-aa").Scan(&statusAfter); err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if statusAfter != "claimed" {
+		t.Errorf("status = %q, want \"claimed\" (MarkBurnStuck must not clobber an already-claimed row)", statusAfter)
+	}
+
+	// No rows remain 'pending' now.
+	remaining, err := database.ListBurnClaimsByStatus(ctx, "pending")
+	if err != nil {
+		t.Fatalf("ListBurnClaimsByStatus(pending) [final]: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("remaining pending = %d, want 0", len(remaining))
 	}
 }

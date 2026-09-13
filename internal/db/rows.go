@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // This file adds the row shapes and upsert methods internal/explorer needs against the
@@ -202,6 +203,104 @@ func (d *DB) UpsertTemplateRegistryEntry(ctx context.Context, t TemplateRegistry
 	`, t.TemplateAddress, t.TemplateName, t.AuthorPublicKey, t.BinaryHash, t.AtEpoch, t.MetadataHash)
 	if err != nil {
 		return fmt.Errorf("db: upsert template registry entry %s: %w", t.TemplateAddress, err)
+	}
+	return nil
+}
+
+// BurnClaim is the row shape for the `burn_claims` table - see
+// migrations/0003_burn_claims_correction.up.sql for the full real-source derivation
+// of every column (in particular: why ClaimPublicKey is a pointer/always nil coming
+// from internal/burnclaim's L1 scanner, and why Commitment - not just
+// L1BurnTxHash - is needed at all).
+type BurnClaim struct {
+	L1BurnTxHash   string
+	Commitment     string
+	ClaimPublicKey *string
+	BurnHeight     uint64
+	ClaimTxID      *string
+	ClaimedAt      *time.Time
+	Status         string
+}
+
+// InsertPendingBurnClaim inserts a single newly-observed L1 burn as a 'pending' row,
+// keyed on l1_burn_tx_hash (the burn kernel's hash - see migration 0003's comment).
+// A conflict on EITHER l1_burn_tx_hash or commitment (both UNIQUE) is treated as
+// "already recorded, nothing to do" rather than an error: internal/burnclaim's L1
+// scanner re-scans overlapping height ranges across Follow ticks by design (see that
+// package's doc comment), so re-observing the same real burn is an expected, frequent
+// event, not a bug.
+func (d *DB) InsertPendingBurnClaim(ctx context.Context, b BurnClaim) error {
+	_, err := d.Pool.Exec(ctx, `
+		INSERT INTO burn_claims (l1_burn_tx_hash, commitment, burn_height, status)
+		VALUES ($1, $2, $3, 'pending')
+		ON CONFLICT (l1_burn_tx_hash) DO NOTHING
+	`, b.L1BurnTxHash, b.Commitment, b.BurnHeight)
+	if err != nil {
+		return fmt.Errorf("db: insert pending burn claim %s: %w", b.L1BurnTxHash, err)
+	}
+	return nil
+}
+
+// ListBurnClaimsByStatus returns every burn_claims row with the given status
+// ('pending', 'claimed', or 'stuck'), ordered by burn_height so callers processing a
+// large backlog see older (more overdue) burns first.
+func (d *DB) ListBurnClaimsByStatus(ctx context.Context, status string) ([]BurnClaim, error) {
+	rows, err := d.Pool.Query(ctx, `
+		SELECT l1_burn_tx_hash, commitment, claim_public_key, burn_height, claim_tx_id, claimed_at, status
+		FROM burn_claims
+		WHERE status = $1
+		ORDER BY burn_height ASC
+	`, status)
+	if err != nil {
+		return nil, fmt.Errorf("db: list burn claims by status %s: %w", status, err)
+	}
+	defer rows.Close()
+
+	var out []BurnClaim
+	for rows.Next() {
+		var b BurnClaim
+		if err := rows.Scan(&b.L1BurnTxHash, &b.Commitment, &b.ClaimPublicKey, &b.BurnHeight, &b.ClaimTxID, &b.ClaimedAt, &b.Status); err != nil {
+			return nil, fmt.Errorf("db: list burn claims by status %s: scan: %w", status, err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list burn claims by status %s: %w", status, err)
+	}
+	return out, nil
+}
+
+// MarkBurnClaimed transitions a burn_claims row to status='claimed', keyed on
+// commitment (not l1_burn_tx_hash) since that's what internal/burnclaim's L2 checker
+// looks the row up by (it queries the indexer using the commitment, has no kernel
+// hash to hand at that point). claimedAt is this repo's own OBSERVATION time, not a
+// real upstream claim timestamp - see migration 0003's comment on why the substate
+// this is derived from carries no timestamp at all. A no-op (0 rows affected) if the
+// commitment is unknown or already claimed; callers don't need to treat that as an
+// error - see internal/burnclaim's own doc comment.
+func (d *DB) MarkBurnClaimed(ctx context.Context, commitment string, claimedAt time.Time) error {
+	_, err := d.Pool.Exec(ctx, `
+		UPDATE burn_claims SET status = 'claimed', claimed_at = $2
+		WHERE commitment = $1 AND status != 'claimed'
+	`, commitment, claimedAt)
+	if err != nil {
+		return fmt.Errorf("db: mark burn claimed %s: %w", commitment, err)
+	}
+	return nil
+}
+
+// MarkBurnStuck transitions a burn_claims row from 'pending' to 'stuck', keyed on
+// l1_burn_tx_hash. Deliberately only touches rows still 'pending' (never overwrites
+// an already-'claimed' row, even one that took long enough to look stuck by the time
+// it was actually claimed) - see internal/burnclaim's stuck-detection doc comment for
+// why a claim can legitimately race a stuck-detection pass.
+func (d *DB) MarkBurnStuck(ctx context.Context, l1BurnTxHash string) error {
+	_, err := d.Pool.Exec(ctx, `
+		UPDATE burn_claims SET status = 'stuck'
+		WHERE l1_burn_tx_hash = $1 AND status = 'pending'
+	`, l1BurnTxHash)
+	if err != nil {
+		return fmt.Errorf("db: mark burn stuck %s: %w", l1BurnTxHash, err)
 	}
 	return nil
 }

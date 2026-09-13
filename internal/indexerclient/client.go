@@ -130,6 +130,37 @@ func (c *Client) ListTemplateCatalogue(ctx context.Context, limit uint64, after 
 	return &out, nil
 }
 
+// GetSubstate fetches GET /substates/{substate_id} - added in this dispatch for
+// internal/burnclaim's L2 claim-checker, which looks up a burn's
+// ClaimedOutputTombstoneAddress substate (id "tombstone_" + hex(commitment) - see
+// crates/template_lib_types/src/substates/claimed_output_tombstone.rs's
+// ClaimedOutputTombstoneAddress::from_commitment) to decide whether that burn has
+// been claimed on L2 yet.
+//
+// substateID is passed through verbatim as a path segment (URL-escaped) - callers
+// build the real substate-id STRING themselves (e.g. via burnclaim's
+// tombstoneSubstateID helper), this method doesn't know or care which substate kind
+// it is.
+//
+// IMPORTANT: a substate that doesn't exist (e.g. a burn nobody has claimed yet) is a
+// real 404 from the indexer (confirmed live:
+// https://ootle-indexer-a.tari.com/substates/tombstone_<64 zero hex chars> ->
+// {"error":"Substate tombstone_... not found"}, esmeralda, checked 2026-09-13) - NOT
+// folded into a 200 response with some "not found" GetSubstateResponse variant. This
+// method returns that as an ordinary *StatusError (via doGet, same as every other
+// non-2xx response in this client) with StatusCode 404 - callers that need to treat
+// "not found" as an expected, non-error outcome (like internal/burnclaim's claim
+// checker) must errors.As() for *StatusError and check StatusCode themselves, rather
+// than this method silently swallowing it into a nil/ok response.
+func (c *Client) GetSubstate(ctx context.Context, substateID string) (*GetSubstateResponse, error) {
+	const op = "GetSubstate"
+	var out GetSubstateResponse
+	if err := c.doGet(ctx, op, "/substates/"+url.PathEscape(substateID), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // doGet performs a single GET request against path (+ query, if non-empty), decoding a
 // 2xx JSON body into out (skipped if out is nil). Every failure mode is wrapped in one
 // of this package's typed errors (see errors.go) before being further wrapped with the
