@@ -1,0 +1,35 @@
+{{define "content"}}
+<h2>Blocks</h2>
+<table>
+    <thead>
+    <tr><th>Height</th><th>Epoch</th><th>Block ID</th><th>Observed At</th><th>Commands</th></tr>
+    </thead>
+    <tbody id="blocks-body">
+    {{template "rows" .Blocks}}
+    </tbody>
+</table>
+{{end}}
+
+{{define "rows"}}
+{{range .}}
+<tr>
+    <td>{{.Height}}</td>
+    <td>{{.Epoch}}</td>
+    <td>{{.BlockID}}</td>
+    <td>{{.TimeString}}</td>
+    <td>{{.CommandCount}}</td>
+</tr>
+{{end}}
+{{if .}}
+{{$last := index . (sub (len .) 1)}}
+<tr id="load-more-row">
+    <td colspan="5">
+        <button hx-get="/blocks/partial?before={{$last.Height}}"
+                hx-target="#load-more-row"
+                hx-swap="outerHTML">
+            Load more
+        </button>
+    </td>
+</tr>
+{{end}}
+{{end}}

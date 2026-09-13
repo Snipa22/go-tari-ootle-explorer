@@ -1,0 +1,37 @@
+{{define "content"}}
+<h2>Templates</h2>
+<p class="empty-note">Full template registry mirror - indexer catalogue merged with the community metadata server.</p>
+<table>
+    <thead>
+    <tr><th>Name</th><th>Address</th><th>Author</th><th>At Epoch</th><th>Featured</th><th>Code Size</th></tr>
+    </thead>
+    <tbody id="templates-body">
+    {{template "rows" .Templates}}
+    </tbody>
+</table>
+{{end}}
+
+{{define "rows"}}
+{{range .}}
+<tr>
+    <td>{{.TemplateName}}</td>
+    <td>{{.TemplateAddress}}</td>
+    <td>{{.AuthorDisplay}}</td>
+    <td>{{.AtEpoch}}</td>
+    <td>{{.IsFeatured}}</td>
+    <td>{{.CodeSizeDisplay}}</td>
+</tr>
+{{end}}
+{{if .}}
+{{$last := index . (sub (len .) 1)}}
+<tr id="load-more-row">
+    <td colspan="6">
+        <button hx-get="/templates/partial?before={{rfc3339nano $last.FirstSeenAt}}"
+                hx-target="#load-more-row"
+                hx-swap="outerHTML">
+            Load more
+        </button>
+    </td>
+</tr>
+{{end}}
+{{end}}
