@@ -50,6 +50,71 @@ func (d *DB) UpsertValidator(ctx context.Context, v Validator) error {
 	return nil
 }
 
+// ValidatorHealth is the row shape internal/vnhealth upserts into the SAME
+// `validators` table UpsertValidator (above) writes to, from a completely different
+// upstream source (tari_validator_node's own JSON-RPC, not the indexer's REST
+// /validators route - see internal/vnhealth's doc comment). Every field except
+// PublicKey is a pointer because a single vnhealth poll may only have SOME of them:
+// e.g. get_identity succeeding but get_epoch_manager_stats/get_consensus_status
+// failing (or returning a nil committee_info because the validator isn't registered
+// yet) still gives vnhealth a public_key worth recording as "recently seen", just not
+// a fresh last_seen_epoch/shard_group/consensus_status to go with it.
+//
+// UpsertValidatorHealth's SQL (below) merges rather than overwrites: a nil field here
+// never clobbers a non-nil value already stored by EITHER source (explorer's
+// UpsertValidator or a previous vnhealth poll) - see that method's own doc comment for
+// the exact COALESCE mechanics and why EXCLUDED can't be used naively for this.
+type ValidatorHealth struct {
+	PublicKey              string
+	LastSeenEpoch          *uint64
+	ShardGroupStart        *uint32
+	ShardGroupEndInclusive *uint32
+	ConsensusStatus        *string
+}
+
+// UpsertValidatorHealth inserts or updates a single validators row from
+// internal/vnhealth, keyed on public_key, WITHOUT letting a nil field on this
+// specific call clobber a non-nil value already stored (by internal/explorer's
+// UpsertValidator, or an earlier UpsertValidatorHealth call) for that same column.
+//
+// The mechanics: every nullable column's UPDATE assignment is
+// `COALESCE($n, validators.column)` - referencing the QUERY PARAMETER directly, NOT
+// `EXCLUDED.column`. This distinction matters and is easy to get wrong: if the INSERT
+// VALUES clause used `COALESCE($n, 0)` (to satisfy the column's NOT NULL constraint
+// for a genuinely brand-new row - see below) and the UPDATE clause then read
+// `EXCLUDED.column`, EXCLUDED would already contain that substituted 0/default, not
+// the original NULL, so `COALESCE(EXCLUDED.column, validators.column)` would
+// incorrectly prefer the substituted default over the existing row's real value on
+// every conflict. Reading the raw parameter directly in the UPDATE clause instead
+// (Postgres allows referencing the same bind parameter multiple times in one
+// statement) preserves the true "nil means unknown, don't touch" semantics through
+// both branches.
+//
+// The INSERT branch's `COALESCE($n, 0)` (or `NULL` for consensus_status, which IS a
+// nullable column per migrations/0001_init.up.sql) only matters for a genuinely new
+// public_key vnhealth observes before internal/explorer ever has - last_seen_epoch/
+// shard_group_start/shard_group_end_inclusive are NOT NULL on this table, so a
+// brand-new row with no known epoch/shard-group yet gets 0 as an explicit
+// "unknown, not yet observed" placeholder rather than failing the insert; a
+// subsequent poll (from either source) with real data overwrites it via the same
+// COALESCE-on-update path once it's known.
+func (d *DB) UpsertValidatorHealth(ctx context.Context, v ValidatorHealth) error {
+	_, err := d.Pool.Exec(ctx, `
+		INSERT INTO validators (public_key, last_seen_epoch, shard_group_start, shard_group_end_inclusive, consensus_status, last_checked_at)
+		VALUES ($1, COALESCE($2, 0), COALESCE($3, 0), COALESCE($4, 0), $5, now())
+		ON CONFLICT (public_key) DO UPDATE SET
+			last_seen_epoch = COALESCE($2, validators.last_seen_epoch),
+			shard_group_start = COALESCE($3, validators.shard_group_start),
+			shard_group_end_inclusive = COALESCE($4, validators.shard_group_end_inclusive),
+			consensus_status = COALESCE($5, validators.consensus_status),
+			last_checked_at = now()
+	`, v.PublicKey, v.LastSeenEpoch, v.ShardGroupStart, v.ShardGroupEndInclusive, v.ConsensusStatus)
+	if err != nil {
+		return fmt.Errorf("db: upsert validator health %s: %w", v.PublicKey, err)
+	}
+	return nil
+}
+
 // OotleBlock is the row shape for the `ootle_blocks` table, populated by
 // internal/explorer from GET /epoch-checkpoints/latest's commit-proof header - the
 // closest real analog to a "block" tari_indexer's REST API exposes (there is no plain
