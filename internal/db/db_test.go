@@ -119,3 +119,146 @@ func TestMigrate_AppliesCleanlyAgainstRealPostgres(t *testing.T) {
 		t.Fatalf("second Migrate() call error = %v, want nil (idempotent no-op)", err)
 	}
 }
+
+// TestUpsertValidatorHealth_MergesWithoutClobberingOtherSourcesFields is the real,
+// live-Postgres proof DISPATCH_BRIEF.md (step 4) asks for: internal/explorer's
+// UpsertValidator (source A) and internal/vnhealth's UpsertValidatorHealth (source B)
+// write the SAME validators row keyed on public_key, from two independent upstream
+// sources that don't necessarily have the same fields available on any given poll -
+// this proves B upserting a PARTIAL row (missing shard_group_start/end_inclusive,
+// simulating a vnhealth poll where get_epoch_manager_stats's committee_info came back
+// nil) does not null out - or otherwise clobber - the values A already wrote for
+// those columns, while still applying B's own fields (consensus_status,
+// last_seen_epoch) on top.
+//
+// Gated behind a reachable real Postgres exactly like
+// TestMigrate_AppliesCleanlyAgainstRealPostgres above (see that test's doc comment
+// for why this sandbox has none, and DISPATCH_BRIEF.md's report for the explicit
+// "not run against a real Postgres this round" callout) - SKIPS rather than either
+// failing the suite or fabricating a pass.
+func TestUpsertValidatorHealth_MergesWithoutClobberingOtherSourcesFields(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = "postgres://tari_ootle_explorer:tari_ootle_explorer@localhost:5432/tari_ootle_explorer?sslmode=disable"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	database, err := Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("SKIP: no reachable Postgres to test real upsert merge semantics against (tried %s): %v", dsn, err)
+	}
+	defer database.Close()
+
+	if _, err := database.Pool.Exec(ctx, `DROP TABLE IF EXISTS schema_migrations, ootle_blocks, validators, burn_claims, template_registry CASCADE`); err != nil {
+		t.Fatalf("cleanup before test: %v", err)
+	}
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	const pubKey = "10780fe1b4d31f8350e4b881dccd8f8210ce056050ac6dd8cca88ca16710b044"
+
+	// Source A (internal/explorer, from the indexer's REST /validators): writes
+	// public_key/last_seen_epoch/shard_group_start/shard_group_end_inclusive. Never
+	// touches consensus_status (see UpsertValidator's own doc comment).
+	if err := database.UpsertValidator(ctx, Validator{
+		PublicKey:              pubKey,
+		LastSeenEpoch:          10990,
+		ShardGroupStart:        1,
+		ShardGroupEndInclusive: 256,
+	}); err != nil {
+		t.Fatalf("UpsertValidator() [source A] error = %v", err)
+	}
+
+	// Source B (internal/vnhealth, from the validator's own JSON-RPC): a PARTIAL
+	// poll result - only consensus_status is known this round (e.g.
+	// get_consensus_status succeeded but get_epoch_manager_stats's committee_info
+	// came back nil, so shard_group_start/end_inclusive/last_seen_epoch are all
+	// genuinely unknown THIS poll, not zero).
+	consensusStatus := "Running"
+	if err := database.UpsertValidatorHealth(ctx, ValidatorHealth{
+		PublicKey:       pubKey,
+		ConsensusStatus: &consensusStatus,
+	}); err != nil {
+		t.Fatalf("UpsertValidatorHealth() [source B, partial] error = %v", err)
+	}
+
+	var gotLastSeenEpoch int64
+	var gotShardStart, gotShardEnd int32
+	var gotConsensusStatus *string
+	err = database.Pool.QueryRow(ctx,
+		`SELECT last_seen_epoch, shard_group_start, shard_group_end_inclusive, consensus_status FROM validators WHERE public_key = $1`,
+		pubKey,
+	).Scan(&gotLastSeenEpoch, &gotShardStart, &gotShardEnd, &gotConsensusStatus)
+	if err != nil {
+		t.Fatalf("query merged row: %v", err)
+	}
+
+	// Source A's fields must have survived source B's partial upsert untouched.
+	if gotLastSeenEpoch != 10990 {
+		t.Errorf("last_seen_epoch = %d, want 10990 (source A's value clobbered)", gotLastSeenEpoch)
+	}
+	if gotShardStart != 1 || gotShardEnd != 256 {
+		t.Errorf("shard_group = [%d,%d], want [1,256] (source A's value clobbered)", gotShardStart, gotShardEnd)
+	}
+	// Source B's own field must have been applied.
+	if gotConsensusStatus == nil || *gotConsensusStatus != "Running" {
+		t.Errorf("consensus_status = %v, want \"Running\" (source B's value not applied)", gotConsensusStatus)
+	}
+
+	// A subsequent source B poll WITH real shard_group/epoch data must correctly
+	// update those columns too (merge semantics aren't "B can never write these
+	// columns", just "a nil field on a given call doesn't clobber").
+	lastSeenEpoch := uint64(10991)
+	shardStart := uint32(1)
+	shardEnd := uint32(256)
+	newStatus := "Syncing"
+	if err := database.UpsertValidatorHealth(ctx, ValidatorHealth{
+		PublicKey:              pubKey,
+		LastSeenEpoch:          &lastSeenEpoch,
+		ShardGroupStart:        &shardStart,
+		ShardGroupEndInclusive: &shardEnd,
+		ConsensusStatus:        &newStatus,
+	}); err != nil {
+		t.Fatalf("UpsertValidatorHealth() [source B, full] error = %v", err)
+	}
+	err = database.Pool.QueryRow(ctx,
+		`SELECT last_seen_epoch, consensus_status FROM validators WHERE public_key = $1`,
+		pubKey,
+	).Scan(&gotLastSeenEpoch, &gotConsensusStatus)
+	if err != nil {
+		t.Fatalf("query row after full B poll: %v", err)
+	}
+	if gotLastSeenEpoch != 10991 {
+		t.Errorf("last_seen_epoch = %d, want 10991 after a full source B poll", gotLastSeenEpoch)
+	}
+	if gotConsensusStatus == nil || *gotConsensusStatus != "Syncing" {
+		t.Errorf("consensus_status = %v, want \"Syncing\" after a full source B poll", gotConsensusStatus)
+	}
+
+	// Finally: a brand-new public_key vnhealth observes before internal/explorer
+	// ever does (e.g. a VN not yet in the indexer's roster) must insert cleanly with
+	// 0 placeholders for the NOT NULL shard/epoch columns, not fail the insert.
+	const newPubKey = "c480fe3a76f03dcdce8d7c85ac7d0001ec97b667260172709b23818c8707e503"
+	onlineStatus := "Running"
+	if err := database.UpsertValidatorHealth(ctx, ValidatorHealth{
+		PublicKey:       newPubKey,
+		ConsensusStatus: &onlineStatus,
+	}); err != nil {
+		t.Fatalf("UpsertValidatorHealth() [new public_key, partial] error = %v", err)
+	}
+	var newShardStart, newShardEnd int32
+	var newLastSeenEpoch int64
+	err = database.Pool.QueryRow(ctx,
+		`SELECT last_seen_epoch, shard_group_start, shard_group_end_inclusive FROM validators WHERE public_key = $1`,
+		newPubKey,
+	).Scan(&newLastSeenEpoch, &newShardStart, &newShardEnd)
+	if err != nil {
+		t.Fatalf("query newly-inserted row: %v", err)
+	}
+	if newLastSeenEpoch != 0 || newShardStart != 0 || newShardEnd != 0 {
+		t.Errorf("new row = last_seen_epoch=%d shard=[%d,%d], want all 0 placeholders", newLastSeenEpoch, newShardStart, newShardEnd)
+	}
+}
