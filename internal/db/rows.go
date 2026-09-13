@@ -207,6 +207,94 @@ func (d *DB) UpsertTemplateRegistryEntry(ctx context.Context, t TemplateRegistry
 	return nil
 }
 
+// TemplateRegistryMetadataEntry is the row shape internal/registry upserts into the
+// SAME `template_registry` table UpsertTemplateRegistryEntry (above) writes to, from
+// a completely different upstream source (the community template-metadata server's
+// GET /community-templates/api/templates/featured, not the indexer's REST
+// /templates/catalogue route - see internal/registry's doc comment and
+// migrations/0004_template_registry_metadata_server_fields.up.sql for the live
+// citation).
+//
+// The metadata server's response includes the same core fields the indexer catalogue
+// does (template_address/template_name/author_public_key/binary_hash/at_epoch/
+// metadata_hash) PLUS five fields the indexer catalogue doesn't have at all
+// (AuthorFriendlyName/CodeSize/IsFeatured/Metadata/Definition). Every field below
+// (other than the TemplateAddress key) is a pointer/nilable-JSON so
+// UpsertTemplateRegistryMetadata can merge rather than overwrite - see that method's
+// own doc comment for why, same reasoning as db.ValidatorHealth/
+// UpsertValidatorHealth.
+type TemplateRegistryMetadataEntry struct {
+	TemplateAddress    string
+	TemplateName       *string
+	AuthorPublicKey    *string
+	BinaryHash         *string
+	AtEpoch            *uint64
+	MetadataHash       *string
+	AuthorFriendlyName *string
+	CodeSize           *int64
+	IsFeatured         *bool
+	Metadata           []byte // opaque JSONB blob, nil when unset upstream - see migration 0004's comment
+	Definition         []byte // opaque JSONB blob, nil when unset upstream - see migration 0004's comment
+}
+
+// UpsertTemplateRegistryMetadata inserts or updates a single template_registry row
+// from internal/registry, keyed on template_address, WITHOUT letting a nil field on
+// THIS call clobber a non-nil value already stored (by internal/explorer's
+// UpsertTemplateRegistryEntry, or an earlier UpsertTemplateRegistryMetadata call) for
+// that same column.
+//
+// Same mechanics as db.UpsertValidatorHealth (see that method's doc comment for the
+// full reasoning): every column's UPDATE assignment is
+// `COALESCE($n, template_registry.column)`, reading the RAW QUERY PARAMETER directly,
+// NOT `EXCLUDED.column` - because the INSERT branch's own `COALESCE($n, empty-default)`-style
+// defaults (needed to satisfy this table's NOT NULL columns for a genuinely new
+// template_address internal/registry observes before internal/explorer ever does)
+// would otherwise get read back by an EXCLUDED-based UPDATE clause and incorrectly
+// preferred over a real, already-stored value on every conflict.
+//
+// This is deliberately used for EVERY shared column (template_name/author_public_key/
+// binary_hash/at_epoch/metadata_hash), not just the five metadata-server-only ones:
+// DISPATCH_BRIEF.md's core concern - "don't let one source's upsert null out fields
+// only the other source populates" - cuts both ways for metadata_hash in particular
+// (a real, non-pointer-shared field on BOTH the indexer catalogue's
+// TemplateCatalogueItem and this server's response, but observed null on every live
+// metadata-server entry checked this session while some indexer-catalogue entries do
+// carry a real value - see 0002_template_registry_correction's own note on that
+// field). Using COALESCE uniformly means whichever source most recently saw a REAL
+// (non-nil) value for a shared column wins, and neither source can blank out the
+// other's value by reporting nil for a field it simply doesn't have data for this
+// round.
+func (d *DB) UpsertTemplateRegistryMetadata(ctx context.Context, t TemplateRegistryMetadataEntry) error {
+	_, err := d.Pool.Exec(ctx, `
+		INSERT INTO template_registry (
+			template_address, template_name, author_public_key, binary_hash, at_epoch,
+			metadata_hash, author_friendly_name, code_size, is_featured, metadata, definition
+		)
+		VALUES (
+			$1, COALESCE($2, ''), COALESCE($3, ''), COALESCE($4, ''), COALESCE($5, 0),
+			$6, $7, $8, COALESCE($9, false), $10, $11
+		)
+		ON CONFLICT (template_address) DO UPDATE SET
+			template_name = COALESCE($2, template_registry.template_name),
+			author_public_key = COALESCE($3, template_registry.author_public_key),
+			binary_hash = COALESCE($4, template_registry.binary_hash),
+			at_epoch = COALESCE($5, template_registry.at_epoch),
+			metadata_hash = COALESCE($6, template_registry.metadata_hash),
+			author_friendly_name = COALESCE($7, template_registry.author_friendly_name),
+			code_size = COALESCE($8, template_registry.code_size),
+			is_featured = COALESCE($9, template_registry.is_featured),
+			metadata = COALESCE($10, template_registry.metadata),
+			definition = COALESCE($11, template_registry.definition)
+	`,
+		t.TemplateAddress, t.TemplateName, t.AuthorPublicKey, t.BinaryHash, t.AtEpoch,
+		t.MetadataHash, t.AuthorFriendlyName, t.CodeSize, t.IsFeatured, t.Metadata, t.Definition,
+	)
+	if err != nil {
+		return fmt.Errorf("db: upsert template registry metadata %s: %w", t.TemplateAddress, err)
+	}
+	return nil
+}
+
 // BurnClaim is the row shape for the `burn_claims` table - see
 // migrations/0003_burn_claims_correction.up.sql for the full real-source derivation
 // of every column (in particular: why ClaimPublicKey is a pointer/always nil coming

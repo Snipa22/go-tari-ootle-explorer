@@ -69,6 +69,7 @@ const (
 	envIndexerRESTBaseURL   = "TARI_OOTLE_EXPLORER_INDEXER_REST_BASE_URL"
 	envValidatorJSONRPCURLs = "TARI_OOTLE_EXPLORER_VALIDATOR_JSONRPC_URLS"
 	envL1BaseNodeGRPCHosts  = "TARI_OOTLE_EXPLORER_L1_BASE_NODE_GRPC_HOSTS"
+	envMetadataServerURL    = "TARI_OOTLE_EXPLORER_METADATA_SERVER_URL"
 )
 
 // NetworkConfig is the set of fields a single network needs: where to reach that
@@ -78,6 +79,20 @@ type NetworkConfig struct {
 	IndexerRESTBaseURL   string   `toml:"indexer_rest_base_url"`
 	ValidatorJSONRPCURLs []string `toml:"validator_jsonrpc_urls"`
 	L1BaseNodeGRPCHosts  []string `toml:"l1_base_node_grpc_hosts"`
+
+	// MetadataServerURL is the community template-metadata server's base URL for
+	// this network (e.g. "https://ootle-templates-esme.tari.com" for esmeralda,
+	// confirmed live/reachable this session - see DISPATCH_BRIEF.md). Per that
+	// brief and tari-cli's own config (crates/cli/src/project/config.rs's
+	// DEFAULT_METADATA_SERVER_URL_ESMERALDA), the configured value already
+	// includes the server's own "/community-templates" path prefix -
+	// internal/registrymetaclient appends only the "/api/templates/..." route
+	// suffix on top of exactly this value, never assumes or re-adds the prefix
+	// itself. Empty means "no metadata server configured for this network" - this
+	// repo's standing rule is no hardcoded non-local-dev endpoint default, so
+	// cmd/registry (the only consumer of this field) fails loudly at startup
+	// rather than silently defaulting to a real public endpoint.
+	MetadataServerURL string `toml:"metadata_server_url"`
 }
 
 // Config is the fully-resolved, ready-to-use configuration: the active network's
@@ -104,6 +119,7 @@ type Flags struct {
 	IndexerRESTBaseURL   string
 	ValidatorJSONRPCURLs string
 	L1BaseNodeGRPCHosts  string
+	MetadataServerURL    string
 }
 
 // fileConfig is the raw shape decoded from a TOML config file, modeled on tari-cli's
@@ -177,6 +193,7 @@ func Load(flags Flags) (*Config, error) {
 	indexerURL := firstNonEmpty(flags.IndexerRESTBaseURL, os.Getenv(envIndexerRESTBaseURL), base.IndexerRESTBaseURL)
 	validatorURLs := firstNonEmptyList(parseList(flags.ValidatorJSONRPCURLs), parseList(os.Getenv(envValidatorJSONRPCURLs)), base.ValidatorJSONRPCURLs)
 	l1Hosts := firstNonEmptyList(parseList(flags.L1BaseNodeGRPCHosts), parseList(os.Getenv(envL1BaseNodeGRPCHosts)), base.L1BaseNodeGRPCHosts)
+	metadataServerURL := firstNonEmpty(flags.MetadataServerURL, os.Getenv(envMetadataServerURL), base.MetadataServerURL)
 
 	return &Config{
 		ActiveNetwork:  activeNetwork,
@@ -186,6 +203,7 @@ func Load(flags Flags) (*Config, error) {
 			IndexerRESTBaseURL:   indexerURL,
 			ValidatorJSONRPCURLs: validatorURLs,
 			L1BaseNodeGRPCHosts:  l1Hosts,
+			MetadataServerURL:    metadataServerURL,
 		},
 	}, nil
 }
