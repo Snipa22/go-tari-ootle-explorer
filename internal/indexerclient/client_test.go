@@ -316,6 +316,104 @@ func TestDoGet_DecodeError(t *testing.T) {
 	}
 }
 
+// TestGetSubstate_RealFixture_Found was captured with:
+//
+//	curl -sS https://ootle-indexer-a.tari.com/substates/resource_0101010101010101010101010101010101010101010101010101010101010101
+//
+// against esmeralda on 2026-09-13 - the real, live STEALTH_TARI_RESOURCE_ADDRESS
+// substate (crates/template_lib_types/src/constants.rs), used here purely to confirm
+// the real 200 response shape (externally-tagged {"Resource": {...}} substate value -
+// see SubstateValue's doc comment) since no real ClaimedOutputTombstone substate was
+// found to exist on this network during this dispatch (see the dispatch report).
+func TestGetSubstate_RealFixture_Found(t *testing.T) {
+	client, _ := newFixtureServer(t, http.StatusOK, readFixture(t, "substate_resource_found.json"))
+
+	resp, err := client.GetSubstate(context.Background(), "resource_0101010101010101010101010101010101010101010101010101010101010101")
+	if err != nil {
+		t.Fatalf("GetSubstate() error = %v", err)
+	}
+	if resp.Version != 0 {
+		t.Errorf("Version = %d, want 0", resp.Version)
+	}
+	if !resp.Verified {
+		t.Errorf("Verified = false, want true")
+	}
+	if resp.Substate.ClaimedOutputTombstone != nil {
+		t.Errorf("ClaimedOutputTombstone = %+v, want nil (this fixture is a Resource substate)", resp.Substate.ClaimedOutputTombstone)
+	}
+}
+
+// TestGetSubstate_RealFixture_NotFound was captured with:
+//
+//	curl -sS -w '\n%{http_code}' \
+//	  https://ootle-indexer-a.tari.com/substates/tombstone_0000000000000000000000000000000000000000000000000000000000000000
+//
+// against esmeralda on 2026-09-13 - a syntactically valid (64 hex chars = the real
+// 32-byte ObjectKey length) but never-created tombstone address, confirming the real
+// "not claimed" response is a 404 with the indexer's standard {"error": "..."} shape,
+// not a 200 with some empty/null substate value.
+func TestGetSubstate_RealFixture_NotFound(t *testing.T) {
+	client, _ := newFixtureServer(t, http.StatusNotFound, readFixture(t, "substate_tombstone_not_found.json"))
+
+	_, err := client.GetSubstate(context.Background(), "tombstone_0000000000000000000000000000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("errors.As(%v, &StatusError{}) = false, want true", err)
+	}
+	if statusErr.StatusCode != http.StatusNotFound {
+		t.Errorf("StatusCode = %d, want 404", statusErr.StatusCode)
+	}
+	if !strings.Contains(statusErr.Body, "not found") {
+		t.Errorf("Body = %q, want it to contain the real error message", statusErr.Body)
+	}
+}
+
+// TestGetSubstate_DecodesClaimedOutputTombstone is a synthetic (NOT live-captured)
+// fixture covering the ClaimedOutputTombstone variant itself - no real claimed burn
+// was found to exist on the live network during this dispatch (see the dispatch
+// report), so this exercises the branch using the real Rust shape confirmed by
+// reading crates/engine_types/src/confidential/unclaimed.rs directly (a single
+// `value: u64` field) and crates/engine_types/src/substate.rs's SubstateValue enum
+// (externally tagged, variant name "ClaimedOutputTombstone").
+func TestGetSubstate_DecodesClaimedOutputTombstone(t *testing.T) {
+	synthetic := `{"version":0,"substate":{"ClaimedOutputTombstone":{"value":1000000}},"verified":true}`
+	client, _ := newFixtureServer(t, http.StatusOK, []byte(synthetic))
+
+	resp, err := client.GetSubstate(context.Background(), "tombstone_aa")
+	if err != nil {
+		t.Fatalf("GetSubstate() error = %v", err)
+	}
+	if resp.Substate.ClaimedOutputTombstone == nil {
+		t.Fatal("ClaimedOutputTombstone = nil, want non-nil")
+	}
+	if resp.Substate.ClaimedOutputTombstone.Value != 1000000 {
+		t.Errorf("Value = %d, want 1000000", resp.Substate.ClaimedOutputTombstone.Value)
+	}
+}
+
+// TestGetSubstate_URLEscapesPathSegment confirms the substate id is sent as a single
+// URL-escaped path segment.
+func TestGetSubstate_URLEscapesPathSegment(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(readFixture(t, "substate_resource_found.json"))
+	}))
+	defer srv.Close()
+	client := NewWithHTTPClient(srv.URL, srv.Client())
+
+	if _, err := client.GetSubstate(context.Background(), "resource_0101010101010101010101010101010101010101010101010101010101010101"); err != nil {
+		t.Fatalf("GetSubstate() error = %v", err)
+	}
+	if gotPath != "/substates/resource_0101010101010101010101010101010101010101010101010101010101010101" {
+		t.Errorf("Path = %q", gotPath)
+	}
+}
+
 // TestDoGet_NetworkError confirms an unreachable host surfaces as a *NetworkError.
 func TestDoGet_NetworkError(t *testing.T) {
 	// Port 1 is a real-but-almost-always-unbound low port, so this connects to

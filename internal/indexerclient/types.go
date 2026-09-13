@@ -160,3 +160,53 @@ type epochCheckpointEnvelope struct {
 		} `json:"proof"`
 	} `json:"checkpoint"`
 }
+
+// ClaimedOutputTombstoneSubstate mirrors the real ClaimedOutputTombstone substate
+// value (crates/engine_types/src/confidential/unclaimed.rs) - the ONLY field it
+// carries is the burned amount, confirmed both against that Rust struct (a single
+// `#[n(0)] pub value: u64`) and live: no created-at/claimed-at/tx-id field exists on
+// this substate at all, so internal/burnclaim's "claimed_at" is necessarily this
+// repo's own observation-time stand-in (documented on db.BurnClaim), not a real
+// upstream timestamp - same caveat pattern as EpochCheckpointHeader's
+// synthetic-block-id/timestamp above.
+type ClaimedOutputTombstoneSubstate struct {
+	Value uint64 `json:"value"`
+}
+
+// SubstateValue mirrors the wire shape of GetSubstateResponse's `substate` field: a
+// Rust enum (engine_types::substate::SubstateValue) serialized with serde's default
+// EXTERNALLY TAGGED representation - i.e. {"<VariantName>": <inner value>} - confirmed
+// live against https://ootle-indexer-a.tari.com/substates/resource_<64 hex 01s>
+// (esmeralda, checked 2026-09-13), which returned
+// {"version":0,"substate":{"Resource":{...}},"verified":true}. Only the
+// ClaimedOutputTombstone variant is modeled here (the one internal/burnclaim's L2
+// claim-checker needs); every other variant (Component, Resource, Vault,
+// NonFungible, TransactionReceipt, Template, ValidatorFeePool, Utxo,
+// ConfidentialOutput - crates/engine_types/src/substate.rs) is left unmodeled and
+// silently ignored by json.Unmarshal, consistent with this package's
+// "only model what's needed" convention.
+type SubstateValue struct {
+	ClaimedOutputTombstone *ClaimedOutputTombstoneSubstate `json:"ClaimedOutputTombstone,omitempty"`
+}
+
+// GetSubstateResponse is GET /substates/{substate_id}'s 200 response shape, mirroring
+// the real GetSubstateResponse (clients/tari_indexer_client/src/types.rs) - confirmed
+// live (see SubstateValue's doc comment above) and against the handler
+// (applications/tari_indexer/src/rest_api/handlers/substates.rs). A substate that
+// does not exist (e.g. an unclaimed burn's tombstone) is a 404 with the real
+// indexer's {"error": "..."} shape, NOT a 200 with some "not found" variant - see
+// Client.GetSubstate's doc comment for how that's surfaced to callers as a
+// *StatusError rather than folded into this struct.
+type GetSubstateResponse struct {
+	Version  uint32        `json:"version"`
+	Substate SubstateValue `json:"substate"`
+	// Verified is true when the indexer checked this substate's value against the
+	// shard group committee via a merkle proof - false when proofs are disabled or
+	// no committee member could supply one yet. internal/burnclaim's L2 checker
+	// does not currently gate on this (v1 accepts the indexer's answer either way,
+	// same trust level Backfill/Poll already extend to every other indexer route in
+	// this repo) - flagged here as a real, deliberate simplification rather than an
+	// oversight, since a mis-verified false claim would be a genuine
+	// security-relevant gap in a production burn tracker.
+	Verified bool `json:"verified"`
+}
