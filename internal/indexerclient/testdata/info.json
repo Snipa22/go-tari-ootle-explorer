@@ -1,0 +1,1 @@
+{"version":"0.40.2","network":"esmeralda","network_byte":38,"sidechain_id":null,"current_epoch":10990,"transaction_retention_epochs":50,"index_gossiped_transactions":true,"verify_substate_proofs":true,"substate_cache_max_serve_lag_secs":300,"indexes_all_events":true}
