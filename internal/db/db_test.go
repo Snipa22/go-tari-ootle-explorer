@@ -106,9 +106,11 @@ func TestMigrate_AppliesCleanlyAgainstRealPostgres(t *testing.T) {
 		}
 	}
 
-	var version string
-	if err := database.Pool.QueryRow(ctx, `SELECT version FROM schema_migrations WHERE version = '0001_init'`).Scan(&version); err != nil {
-		t.Fatalf("expected schema_migrations to record 0001_init: %v", err)
+	for _, version := range []string{"0001_init", "0002_template_registry_correction"} {
+		var got string
+		if err := database.Pool.QueryRow(ctx, `SELECT version FROM schema_migrations WHERE version = $1`, version).Scan(&got); err != nil {
+			t.Fatalf("expected schema_migrations to record %s: %v", version, err)
+		}
 	}
 
 	// Running Migrate again must be a clean no-op (the "already applied" skip path),
