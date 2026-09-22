@@ -335,6 +335,131 @@ func TestHandleAPITemplates_DBError(t *testing.T) {
 	assertJSONContentType(t, rec)
 }
 
+// ---- GET /api/tip-info ----
+
+func TestHandleAPITipInfo_HappyPath(t *testing.T) {
+	store := &fakeStore{
+		blocks:  []db.OotleBlock{{BlockID: "block-2", Height: 20, Epoch: 5, Timestamp: 100, CommandCount: 3}},
+		summary: db.LiveValidatorEpochSummary{Epoch: 5, Count: 7},
+		burnClaims: []db.BurnClaim{
+			{L1BurnTxHash: "kernel-1", Commitment: "commit-1", BurnHeight: 100, Status: "stuck"},
+			{L1BurnTxHash: "kernel-2", Commitment: "commit-2", BurnHeight: 101, Status: "stuck"},
+		},
+	}
+	srv := newTestServer(t, store)
+
+	rec := doRequest(t, srv.Handler(), "GET", "/api/tip-info")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	assertJSONContentType(t, rec)
+
+	var got map[string]any
+	decodeJSON(t, rec.Body.Bytes(), &got)
+
+	latestBlock, ok := got["latest_block"].(map[string]any)
+	if !ok || latestBlock["block_id"] != "block-2" {
+		t.Errorf("got[\"latest_block\"] = %#v, want block-2", got["latest_block"])
+	}
+	summary, ok := got["validator_epoch_summary"].(map[string]any)
+	if !ok || summary["epoch"] != float64(5) || summary["count"] != float64(7) {
+		t.Errorf("got[\"validator_epoch_summary\"] = %#v, want {epoch:5 count:7}", got["validator_epoch_summary"])
+	}
+	if got["stuck_burn_claims_count"] != float64(2) {
+		t.Errorf("got[\"stuck_burn_claims_count\"] = %v, want 2", got["stuck_burn_claims_count"])
+	}
+	// The stuck-claims filter must have been threaded through, not "all statuses".
+	if store.lastStatusArg != "stuck" {
+		t.Errorf("lastStatusArg = %q, want \"stuck\"", store.lastStatusArg)
+	}
+	// A compact count, not the full claim rows.
+	if _, present := got["stuck_burn_claims"]; present {
+		t.Errorf("body unexpectedly includes full stuck_burn_claims rows: %s", rec.Body.String())
+	}
+	// No error fields on the happy path.
+	for _, key := range []string{"latest_block_error", "validator_epoch_summary_error", "stuck_burn_claims_count_error"} {
+		if _, present := got[key]; present {
+			t.Errorf("body unexpectedly includes %q on the happy path: %s", key, rec.Body.String())
+		}
+	}
+}
+
+func TestHandleAPITipInfo_EmptyBlocksTableIsNull(t *testing.T) {
+	store := &fakeStore{summary: db.LiveValidatorEpochSummary{}}
+	srv := newTestServer(t, store)
+
+	rec := doRequest(t, srv.Handler(), "GET", "/api/tip-info")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	decodeJSON(t, rec.Body.Bytes(), &got)
+	if v, present := got["latest_block"]; !present || v != nil {
+		t.Errorf("got[\"latest_block\"] = %#v (present=%v), want null", v, present)
+	}
+	if got["stuck_burn_claims_count"] != float64(0) {
+		t.Errorf("got[\"stuck_burn_claims_count\"] = %v, want 0", got["stuck_burn_claims_count"])
+	}
+}
+
+func TestHandleAPITipInfo_PartialDegradation(t *testing.T) {
+	store := &fakeStore{
+		blocksErr: errors.New("boom"),
+		summary:   db.LiveValidatorEpochSummary{Epoch: 9, Count: 2},
+		burnClaims: []db.BurnClaim{
+			{L1BurnTxHash: "kernel-1", Commitment: "commit-1", BurnHeight: 100, Status: "stuck"},
+		},
+	}
+	srv := newTestServer(t, store)
+
+	rec := doRequest(t, srv.Handler(), "GET", "/api/tip-info")
+	// One sub-query failing must still be a 200 with an inline error, not a 500.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	assertJSONContentType(t, rec)
+
+	var got map[string]any
+	decodeJSON(t, rec.Body.Bytes(), &got)
+	if v, present := got["latest_block"]; !present || v != nil {
+		t.Errorf("got[\"latest_block\"] = %#v (present=%v), want null on error", v, present)
+	}
+	if got["latest_block_error"] == "" || got["latest_block_error"] == nil {
+		t.Errorf("body missing non-empty \"latest_block_error\" field, got: %s", rec.Body.String())
+	}
+	summary, ok := got["validator_epoch_summary"].(map[string]any)
+	if !ok || summary["epoch"] != float64(9) || summary["count"] != float64(2) {
+		t.Errorf("got[\"validator_epoch_summary\"] = %#v, want {epoch:9 count:2} (unaffected by the blocks error)", got["validator_epoch_summary"])
+	}
+	if got["stuck_burn_claims_count"] != float64(1) {
+		t.Errorf("got[\"stuck_burn_claims_count\"] = %v, want 1 (unaffected by the blocks error)", got["stuck_burn_claims_count"])
+	}
+	if _, present := got["validator_epoch_summary_error"]; present {
+		t.Errorf("body unexpectedly includes validator_epoch_summary_error: %s", rec.Body.String())
+	}
+}
+
+func TestHandleAPITipInfo_AllSubQueriesFail(t *testing.T) {
+	store := &fakeStore{
+		blocksErr:     errors.New("boom"),
+		summaryErr:    errors.New("boom"),
+		burnClaimsErr: errors.New("boom"),
+	}
+	srv := newTestServer(t, store)
+
+	rec := doRequest(t, srv.Handler(), "GET", "/api/tip-info")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when all three sub-queries fail; body=%s", rec.Code, rec.Body.String())
+	}
+	assertJSONContentType(t, rec)
+	var errBody map[string]string
+	decodeJSON(t, rec.Body.Bytes(), &errBody)
+	if errBody["error"] == "" {
+		t.Errorf("body missing non-empty \"error\" field, got: %s", rec.Body.String())
+	}
+}
+
 // ---- GET /api/health ----
 
 func TestHandleAPIHealth_Reachable(t *testing.T) {
