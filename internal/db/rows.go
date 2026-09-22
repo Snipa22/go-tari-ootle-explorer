@@ -148,12 +148,18 @@ func (d *DB) UpsertValidatorHealth(ctx context.Context, v ValidatorHealth) error
 //     is not the same "number of Commands in the block body" semantic the column's
 //     doc comment in 0001_init.up.sql originally described for a real consensus
 //     block.
+//
+// JSON tags below (snake_case, matching this table's own column names) exist for
+// internal/server's GET /api/blocks - the first consumer that marshals this struct
+// directly rather than through an HTML view-adapter (see internal/server/server.go's
+// blockView) - so a JSON API caller gets stable, conventional key names instead of
+// encoding/json's default bare-Go-identifier fallback (e.g. "BlockID").
 type OotleBlock struct {
-	BlockID      string
-	Height       uint64
-	Epoch        uint64
-	Timestamp    int64
-	CommandCount int32
+	BlockID      string `json:"block_id"`
+	Height       uint64 `json:"height"`
+	Epoch        uint64 `json:"epoch"`
+	Timestamp    int64  `json:"timestamp"`
+	CommandCount int32  `json:"command_count"`
 }
 
 // UpsertOotleBlock inserts or updates a single ootle_blocks row, keyed on block_id.
@@ -300,14 +306,18 @@ func (d *DB) UpsertTemplateRegistryMetadata(ctx context.Context, t TemplateRegis
 // of every column (in particular: why ClaimPublicKey is a pointer/always nil coming
 // from internal/burnclaim's L1 scanner, and why Commitment - not just
 // L1BurnTxHash - is needed at all).
+//
+// JSON tags below (snake_case, matching this table's own column names) exist for
+// internal/server's GET /api/burn-claims - see db.OotleBlock's own doc comment for
+// why (same reasoning, first direct-marshal consumer of this struct).
 type BurnClaim struct {
-	L1BurnTxHash   string
-	Commitment     string
-	ClaimPublicKey *string
-	BurnHeight     uint64
-	ClaimTxID      *string
-	ClaimedAt      *time.Time
-	Status         string
+	L1BurnTxHash   string     `json:"l1_burn_tx_hash"`
+	Commitment     string     `json:"commitment"`
+	ClaimPublicKey *string    `json:"claim_public_key"`
+	BurnHeight     uint64     `json:"burn_height"`
+	ClaimTxID      *string    `json:"claim_tx_id"`
+	ClaimedAt      *time.Time `json:"claimed_at"`
+	Status         string     `json:"status"`
 }
 
 // InsertPendingBurnClaim inserts a single newly-observed L1 burn as a 'pending' row,

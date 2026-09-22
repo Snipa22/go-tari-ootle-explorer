@@ -83,13 +83,17 @@ func scanOotleBlock(s rowScanner) (OotleBlock, error) {
 // consensus_status/last_checked_at at all), this covers every column the table
 // actually has - GET /validators (DISPATCH_BRIEF.md) needs consensus_status and
 // last_checked_at displayed alongside the roster fields.
+//
+// JSON tags below (snake_case, matching this table's own column names) exist for
+// internal/server's GET /api/validators - see db.OotleBlock's own doc comment
+// (rows.go) for why (same reasoning, first direct-marshal consumer of this struct).
 type ValidatorRow struct {
-	PublicKey              string
-	LastSeenEpoch          uint64
-	ShardGroupStart        uint32
-	ShardGroupEndInclusive uint32
-	ConsensusStatus        *string
-	LastCheckedAt          time.Time
+	PublicKey              string    `json:"public_key"`
+	LastSeenEpoch          uint64    `json:"last_seen_epoch"`
+	ShardGroupStart        uint32    `json:"shard_group_start"`
+	ShardGroupEndInclusive uint32    `json:"shard_group_end_inclusive"`
+	ConsensusStatus        *string   `json:"consensus_status"`
+	LastCheckedAt          time.Time `json:"last_checked_at"`
 }
 
 func scanValidatorRow(s rowScanner) (ValidatorRow, error) {
