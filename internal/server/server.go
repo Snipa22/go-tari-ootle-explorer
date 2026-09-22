@@ -90,6 +90,7 @@ type Server struct {
 	burnClaimsTmpl    *template.Template
 	templatesListTmpl *template.Template
 	templatesRowsTmpl *template.Template
+	apiDocsTmpl       *template.Template
 }
 
 // New parses the embedded templates and constructs a Server. Returns an error if the
@@ -124,6 +125,14 @@ func New(store Store) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: parse templates rows template: %w", err)
 	}
+	// api_docs.html is a standalone page (Swagger UI's own layout would clash
+	// with layout.html's nav-bar chrome - see that template's own comment), so
+	// it's parsed on its own rather than alongside templates/layout.html like
+	// every other *Tmpl above.
+	apiDocsTmpl, err := template.New("api_docs.html").Funcs(funcs).ParseFS(templateFS, "templates/api_docs.html")
+	if err != nil {
+		return nil, fmt.Errorf("server: parse api docs template: %w", err)
+	}
 
 	return &Server{
 		Store:             store,
@@ -134,6 +143,7 @@ func New(store Store) (*Server, error) {
 		burnClaimsTmpl:    burnClaimsTmpl,
 		templatesListTmpl: templatesListTmpl,
 		templatesRowsTmpl: templatesRowsTmpl,
+		apiDocsTmpl:       apiDocsTmpl,
 	}, nil
 }
 
@@ -162,6 +172,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/templates", s.handleAPITemplates)
 	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
 	mux.HandleFunc("GET /api/tip-info", s.handleAPITipInfo)
+
+	// OpenAPI spec + served Swagger UI - per DISPATCH_BRIEF_OPENAPI.md. /api/spec
+	// serves the checked-in docs/openapi.yaml (embedded via docs.OpenAPISpecYAML);
+	// /api/docs serves a minimal Swagger UI page pointed at it.
+	mux.HandleFunc("GET /api/spec", s.handleAPISpec)
+	mux.HandleFunc("GET /api/docs", s.handleAPIDocs)
 
 	return mux
 }

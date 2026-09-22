@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Snipa22/go-tari-ootle-explorer/internal/db"
+	"gopkg.in/yaml.v3"
 )
 
 // decodeJSON is a small test helper that fails the test if rec's body isn't valid
@@ -474,6 +475,76 @@ func TestHandleAPIHealth_Reachable(t *testing.T) {
 	decodeJSON(t, rec.Body.Bytes(), &body)
 	if body["status"] != "ok" || body["database"] != "reachable" {
 		t.Errorf("body = %+v, want status=ok database=reachable", body)
+	}
+}
+
+// ---- GET /api/spec ----
+
+func TestHandleAPISpec_YAML(t *testing.T) {
+	srv := newTestServer(t, &fakeStore{})
+	rec := doRequest(t, srv.Handler(), "GET", "/api/spec")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/yaml; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want %q", got, "application/yaml; charset=utf-8")
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty, want non-empty YAML spec")
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("body is not valid YAML: %v; body=%s", err, body)
+	}
+	if doc["openapi"] == nil {
+		t.Errorf("parsed YAML missing top-level \"openapi\" key, got: %+v", doc)
+	}
+	if _, ok := doc["paths"].(map[string]any); !ok {
+		t.Errorf("parsed YAML missing top-level \"paths\" map, got: %+v", doc["paths"])
+	}
+}
+
+func TestHandleAPISpec_JSONFormat(t *testing.T) {
+	srv := newTestServer(t, &fakeStore{})
+	rec := doRequest(t, srv.Handler(), "GET", "/api/spec?format=json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	assertJSONContentType(t, rec)
+	var doc map[string]any
+	decodeJSON(t, rec.Body.Bytes(), &doc)
+	if doc["openapi"] == nil {
+		t.Errorf("parsed JSON missing top-level \"openapi\" key, got: %+v", doc)
+	}
+	paths, ok := doc["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("parsed JSON missing top-level \"paths\" map, got: %+v", doc["paths"])
+	}
+	for _, route := range []string{"/api/blocks", "/api/validators", "/api/burn-claims", "/api/templates", "/api/tip-info", "/api/health"} {
+		if _, present := paths[route]; !present {
+			t.Errorf("parsed JSON spec missing path %q", route)
+		}
+	}
+}
+
+// ---- GET /api/docs ----
+
+func TestHandleAPIDocs(t *testing.T) {
+	srv := newTestServer(t, &fakeStore{})
+	rec := doRequest(t, srv.Handler(), "GET", "/api/docs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want %q", got, "text/html; charset=utf-8")
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "swagger-ui-bundle.js") {
+		t.Errorf("body missing Swagger UI CDN script reference, got: %s", body)
+	}
+	if !strings.Contains(body, "/api/spec") {
+		t.Errorf("body missing reference to /api/spec as the Swagger UI spec URL, got: %s", body)
 	}
 }
 
