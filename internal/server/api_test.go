@@ -548,6 +548,45 @@ func TestHandleAPIDocs(t *testing.T) {
 	}
 }
 
+// TestHandleAPIDocs_DarkThemeContrastOverrides is a cheap regression guard for the
+// dark-theme contrast fix (see api_docs.html's own comment): swagger-ui-dist@5's
+// default light-theme CSS otherwise leaves operation-summary descriptions, the
+// Schemas/Models section, and the "Servers" dropdown bar unreadable against this
+// page's dark background unless <html> opts into Swagger UI's own built-in
+// dark-mode class and this page's own palette overrides are present.
+func TestHandleAPIDocs_DarkThemeContrastOverrides(t *testing.T) {
+	srv := newTestServer(t, &fakeStore{})
+	rec := doRequest(t, srv.Handler(), "GET", "/api/docs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `<html lang="en" class="dark-mode">`) {
+		t.Errorf("body missing class=\"dark-mode\" on <html> (enables swagger-ui-dist's built-in dark theme), got: %s", body)
+	}
+
+	// Each of these overrides retints a specific low-contrast piece flagged in the
+	// dark-theme fix to this repo's own templates/layout.html palette (#0f0f12
+	// background, #17171b panel, #333 border, #e6e6e6 primary text, #999 muted
+	// text, #7cc7ff link) rather than leaving swagger-ui-dist's own close-but-not-
+	// matching dark-mode defaults in place.
+	wantSelectors := []string{
+		".swagger-ui { background: #0f0f12",
+		".swagger-ui .opblock-summary-description { color: #999",
+		".swagger-ui .scheme-container { background: #17171b",
+		".swagger-ui .servers-title { color: #999",
+		".swagger-ui section.models h4 span { color: #999",
+		".swagger-ui .model-title { color: #e6e6e6",
+		".swagger-ui .model-container,\n        .swagger-ui .model-box { background: #17171b",
+	}
+	for _, want := range wantSelectors {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing dark-theme contrast override %q", want)
+		}
+	}
+}
+
 func TestHandleAPIHealth_DegradedDatabase(t *testing.T) {
 	srv := newTestServer(t, &fakeStore{summaryErr: errors.New("connection refused")})
 	rec := doRequest(t, srv.Handler(), "GET", "/api/health")
