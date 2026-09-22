@@ -40,10 +40,17 @@ type fakeStore struct {
 	// ListTemplateRegistry was last called with.
 	lastBeforeHeightArg int64
 	lastBeforeTimeArg   time.Time
+	// lastLimitArg/lastTemplatesLimitArg record the limit ListOotleBlocks/
+	// ListTemplateRegistry were last called with - used by api_test.go to assert
+	// /api/blocks and /api/templates' ?limit= param (default + clamp) is threaded
+	// through correctly; unused by the pre-existing HTML-route tests above.
+	lastLimitArg          int
+	lastTemplatesLimitArg int
 }
 
-func (f *fakeStore) ListOotleBlocks(_ context.Context, beforeHeight int64, _ int) ([]db.OotleBlock, error) {
+func (f *fakeStore) ListOotleBlocks(_ context.Context, beforeHeight int64, limit int) ([]db.OotleBlock, error) {
 	f.lastBeforeHeightArg = beforeHeight
+	f.lastLimitArg = limit
 	if f.blocksErr != nil {
 		return nil, f.blocksErr
 	}
@@ -72,8 +79,9 @@ func (f *fakeStore) ListBurnClaims(_ context.Context, status string) ([]db.BurnC
 	return f.burnClaims, nil
 }
 
-func (f *fakeStore) ListTemplateRegistry(_ context.Context, before time.Time, _ int) ([]db.TemplateRegistryRow, error) {
+func (f *fakeStore) ListTemplateRegistry(_ context.Context, before time.Time, limit int) ([]db.TemplateRegistryRow, error) {
 	f.lastBeforeTimeArg = before
+	f.lastTemplatesLimitArg = limit
 	if f.templatesErr != nil {
 		return nil, f.templatesErr
 	}

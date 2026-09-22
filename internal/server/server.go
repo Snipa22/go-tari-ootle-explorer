@@ -150,6 +150,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /templates", s.handleTemplatesList)
 	mux.HandleFunc("GET /templates/partial", s.handleTemplatesPartial)
 	mux.HandleFunc("GET /health", s.handleHealth)
+
+	// Dedicated JSON API namespace - see internal/server/api.go's own doc comment
+	// for why this is a separate namespace rather than a ?json=1 alias on the
+	// routes above (a user-clarified design decision, per
+	// DISPATCH_BRIEF_JSON_API.md). None of the HTML routes registered above are
+	// touched by this.
+	mux.HandleFunc("GET /api/blocks", s.handleAPIBlocks)
+	mux.HandleFunc("GET /api/validators", s.handleAPIValidators)
+	mux.HandleFunc("GET /api/burn-claims", s.handleAPIBurnClaims)
+	mux.HandleFunc("GET /api/templates", s.handleAPITemplates)
+	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
+
 	return mux
 }
 
