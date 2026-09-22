@@ -238,6 +238,84 @@ func (s *Server) handleAPITemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// apiValidatorEpochSummary is the /api/tip-info JSON DTO for
+// db.LiveValidatorEpochSummary - that struct has no json tags of its own (it's an
+// internal/db-only computed value, not a table row), so this gives it the stable
+// snake_case shape DISPATCH_BRIEF_TIPINFO_ADDENDUM.md specifies
+// (`{"epoch":...,"count":...}`) without adding JSON concerns to internal/db.
+type apiValidatorEpochSummary struct {
+	Epoch uint64 `json:"epoch"`
+	Count int    `json:"count"`
+}
+
+// apiTipInfo is the /api/tip-info response body. Each field's sibling
+// "<field>_error" is only present (via omitempty) when that specific sub-query
+// failed - see handleAPITipInfo's own doc comment for the independent-degradation
+// reasoning.
+type apiTipInfo struct {
+	LatestBlock                *db.OotleBlock           `json:"latest_block"`
+	LatestBlockError           string                   `json:"latest_block_error,omitempty"`
+	ValidatorEpochSummary      apiValidatorEpochSummary `json:"validator_epoch_summary"`
+	ValidatorEpochSummaryError string                   `json:"validator_epoch_summary_error,omitempty"`
+	StuckBurnClaimsCount       int                      `json:"stuck_burn_claims_count"`
+	StuckBurnClaimsCountError  string                   `json:"stuck_burn_claims_count_error,omitempty"`
+}
+
+// handleAPITipInfo serves GET /api/tip-info: a compact "chain tip / liveness
+// status" snapshot, per DISPATCH_BRIEF_TIPINFO_ADDENDUM.md's analogy to
+// textexplore.tari.com's `?json` response's `tipInfo` subsection (an L1 base-node
+// chain-tip object: best block height/hash, accumulated difficulty, sync state).
+// This repo is L2/Ootle and has no base-node equivalent in its data model, so this
+// endpoint instead assembles the closest real analog this repo's Store actually
+// has - the same three data points handleHome's default view already surfaces as
+// its own "liveness" panels: the most recently observed ootle_blocks row, the live
+// validator epoch summary, and the current stuck-burn-claim count.
+//
+// Each of the three sub-queries degrades independently on its own error, same
+// "one data source erroring isn't reason to fail the whole response" principle
+// handleHome documents for its own panels: on a sub-query error, the corresponding
+// field falls back to its zero value (nil/zero-value/0) and a sibling "<field>_error"
+// string is set instead. A top-level 500 is only returned if ALL three sub-queries
+// fail - a genuinely fully-degraded response, rather than a single flaky query
+// taking down the whole snapshot.
+func (s *Server) handleAPITipInfo(w http.ResponseWriter, r *http.Request) {
+	var out apiTipInfo
+	failures := 0
+
+	blocks, err := s.Store.ListOotleBlocks(r.Context(), math.MaxInt64, 1)
+	if err != nil {
+		log.Printf("server: api: tip-info: list ootle blocks: %v", err)
+		out.LatestBlockError = "unable to load recent blocks"
+		failures++
+	} else if len(blocks) > 0 {
+		out.LatestBlock = &blocks[0]
+	}
+
+	summary, err := s.Store.GetLiveValidatorEpochSummary(r.Context())
+	if err != nil {
+		log.Printf("server: api: tip-info: live validator epoch summary: %v", err)
+		out.ValidatorEpochSummaryError = "unable to load validator summary"
+		failures++
+	} else {
+		out.ValidatorEpochSummary = apiValidatorEpochSummary{Epoch: summary.Epoch, Count: summary.Count}
+	}
+
+	stuck, err := s.Store.ListBurnClaims(r.Context(), "stuck")
+	if err != nil {
+		log.Printf("server: api: tip-info: list stuck burn claims: %v", err)
+		out.StuckBurnClaimsCountError = "unable to load stuck burn claims"
+		failures++
+	} else {
+		out.StuckBurnClaimsCount = len(stuck)
+	}
+
+	if failures == 3 {
+		writeJSONError(w, http.StatusInternalServerError, "failed to load tip info")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleAPIHealth serves GET /api/health: same liveness semantics as handleHealth
 // (GET /health, see that handler's own doc comment for the full reasoning -
 // deliberately NOT a poller-health check, just "is this HTTP process up and is its
