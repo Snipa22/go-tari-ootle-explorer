@@ -1,0 +1,565 @@
+openapi: 3.0.3
+info:
+  title: go-tari-ootle-explorer API
+  description: >-
+    Read-only JSON API over this repo's four Ootle (L2) explorer data surfaces:
+    indexer-backed blocks, the validator roster, L1->L2 burn-claim tracking, and the
+    community template registry mirror. Every route in this namespace is served by
+    `internal/server/api.go` and is strictly read-only against this repo's own
+    Postgres store - it never talks to `tari_indexer`/`tari_validator_node` directly
+    (see that file's own doc comment).
+  version: "0.1.0"
+  contact:
+    name: go-tari-ootle-explorer
+    url: https://github.com/Snipa22/go-tari-ootle-explorer
+servers:
+  - url: https://ootle-testnet.supportxtm.com
+    description: Public testnet deployment
+  - url: http://localhost:8080
+    description: Local development (cmd/server default listen address)
+
+tags:
+  - name: blocks
+  - name: validators
+  - name: burn-claims
+  - name: templates
+  - name: tip-info
+  - name: health
+
+paths:
+  /api/blocks:
+    get:
+      operationId: listBlocks
+      tags: [blocks]
+      summary: List recently observed ootle_blocks rows
+      description: >-
+        Same before-cursor + limit pagination shape as the HTML `/blocks` and
+        `/blocks/partial` routes collapsed into a single JSON endpoint. Rows are
+        ordered by height DESC (most recent first).
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: >-
+            Height cursor - returns rows with `height < before`. Defaults to the
+            maximum int64 value (i.e. the first/most-recent page) when omitted.
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum number of rows to return. Defaults to 25 when omitted. Values
+            above 100 are silently clamped down to 100 (MaxAPILimit); values that
+            are not a positive integer are rejected with a 400.
+          schema:
+            type: integer
+            minimum: 1
+            default: 25
+            maximum: 100
+      responses:
+        "200":
+          description: >-
+            An array of blocks. An empty result is always marshaled as a JSON
+            array `[]`, never `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OotleBlock"
+        "400":
+          description: Malformed `before` or `limit` query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: Store/database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/validators:
+    get:
+      operationId: listValidators
+      tags: [validators]
+      summary: List the full validator roster
+      description: >-
+        Returns every row in the `validators` table - unpaginated, matching the
+        HTML `/validators` route's own no-pagination behavior (a real-world
+        validator roster is small enough for v1's purposes).
+      responses:
+        "200":
+          description: >-
+            An array of validators. An empty result is always marshaled as a
+            JSON array `[]`, never `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ValidatorRow"
+        "500":
+          description: Store/database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/burn-claims:
+    get:
+      operationId: listBurnClaims
+      tags: [burn-claims]
+      summary: List L1->L2 burn-claim tracking rows
+      description: >-
+        Returns `burn_claims` rows, most-recently-mined first (ORDER BY
+        burn_height DESC), honoring the same `?status=` filter semantics as the
+        HTML `/burn-claims` route.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: >-
+            Filters to exactly one status. Omitted/empty returns every status.
+            An unrecognized value is passed straight through to the query
+            (which will simply match zero rows, since the table's own CHECK
+            constraint limits real rows to the three known values) rather than
+            rejected with a 400.
+          schema:
+            type: string
+            enum: [pending, claimed, stuck]
+      responses:
+        "200":
+          description: >-
+            An array of burn claims. An empty result is always marshaled as a
+            JSON array `[]`, never `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BurnClaim"
+        "500":
+          description: Store/database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/templates:
+    get:
+      operationId: listTemplates
+      tags: [templates]
+      summary: List the community template registry mirror
+      description: >-
+        Same before-cursor + limit pagination shape as `/api/blocks`, but keyed
+        on a timestamp cursor (`first_seen_at`) rather than a height, matching
+        the HTML `/templates` and `/templates/partial` routes' own cursor
+        semantics. Rows are ordered by first_seen_at DESC (most recently
+        observed first).
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: >-
+            RFC3339Nano timestamp cursor - returns rows with
+            `first_seen_at < before`. Defaults to the current time (i.e. the
+            first/most-recent page) when omitted.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum number of rows to return. Defaults to 25 when omitted. Values
+            above 100 are silently clamped down to 100 (MaxAPILimit); values that
+            are not a positive integer are rejected with a 400.
+          schema:
+            type: integer
+            minimum: 1
+            default: 25
+            maximum: 100
+      responses:
+        "200":
+          description: >-
+            An array of template registry entries. An empty result is always
+            marshaled as a JSON array `[]`, never `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiTemplateRegistryRow"
+        "400":
+          description: Malformed `before` or `limit` query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "500":
+          description: Store/database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/tip-info:
+    get:
+      operationId: getTipInfo
+      tags: [tip-info]
+      summary: Compact "chain tip / liveness" snapshot
+      description: >-
+        Assembles the three data points the HTML home page's default liveness
+        panels already surface: the most recently observed ootle_blocks row, the
+        live validator epoch summary, and the current stuck-burn-claim count.
+        Each of the three sub-queries degrades INDEPENDENTLY on its own error -
+        see ApiTipInfo's schema description for the exact behavior. A top-level
+        500 is only returned if ALL THREE sub-queries fail.
+      responses:
+        "200":
+          description: Tip-info snapshot, possibly with some fields degraded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiTipInfo"
+        "500":
+          description: All three sub-queries failed - a fully-degraded response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Liveness probe for the HTTP process itself
+      description: >-
+        Deliberately NOT a poller-health check - this process never runs any of
+        the indexer/vnhealth/burnclaim/registry pollers itself. "Healthy" here
+        means only "this HTTP process is up and its Postgres connection is
+        queryable" (checked via a single cheap query). Always returns HTTP 200 -
+        a degraded database connection is reported in the body, never via a
+        non-200 status.
+      responses:
+        "200":
+          description: Always returned - see `database` field for actual status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiHealth"
+
+  /api/spec:
+    get:
+      operationId: getOpenApiSpec
+      tags: [health]
+      summary: Serve this OpenAPI spec
+      description: >-
+        Serves the contents of `docs/openapi.yaml` (embedded into the binary via
+        `//go:embed`) directly. Pass `?format=json` to receive the same spec
+        transcoded to JSON instead of YAML.
+      parameters:
+        - name: format
+          in: query
+          required: false
+          description: When set to `json`, transcodes the embedded YAML spec to JSON.
+          schema:
+            type: string
+            enum: [json]
+      responses:
+        "200":
+          description: The raw OpenAPI spec, as YAML (default) or JSON (`?format=json`).
+          content:
+            application/yaml:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+
+  /api/docs:
+    get:
+      operationId: getSwaggerUi
+      tags: [health]
+      summary: Swagger UI page for this spec
+      description: >-
+        A minimal static HTML page embedding Swagger UI via a CDN script tag
+        (same CDN-not-a-build-step convention this repo already uses for HTMX),
+        pointed at `/api/spec` as its spec URL.
+      responses:
+        "200":
+          description: The Swagger UI HTML page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+components:
+  schemas:
+    ApiError:
+      type: object
+      description: >-
+        Shared error-response shape for every /api/* route's 400/500 responses -
+        this repo returns valid JSON even on error, never a plain-text body.
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: failed to load blocks
+
+    OotleBlock:
+      type: object
+      description: >-
+        Mirrors `db.OotleBlock`, populated from `tari_indexer`'s
+        `GET /epoch-checkpoints/latest` commit-proof header - the closest real
+        analog to a "block" the indexer's REST API exposes (there is no plain
+        `/blocks` route).
+      required: [block_id, height, epoch, timestamp, command_count]
+      properties:
+        block_id:
+          type: string
+          description: >-
+            A SYNTHETIC identifier this repo computes itself (a SHA-256 hex
+            digest over the checkpoint header's own committed fields) - NOT the
+            real upstream consensus BlockId, which would need fields
+            (total_leader_fee, extra_data, protocol_version) this reduced wire
+            header doesn't carry at all. Stable and collision-safe enough to key
+            this table's rows on for v1.
+        height:
+          type: integer
+          format: int64
+          minimum: 0
+        epoch:
+          type: integer
+          format: int64
+          minimum: 0
+        timestamp:
+          type: integer
+          format: int64
+          description: >-
+            Unix seconds. This is this repo's OWN capture/OBSERVATION time (when
+            internal/explorer fetched the checkpoint), NOT a real
+            block-creation timestamp - the checkpoint header has no such field
+            at all. Treat this as "when this explorer last observed the latest
+            checkpoint".
+        command_count:
+          type: integer
+          format: int32
+          description: >-
+            Always 0 currently: the checkpoint's own committed command is a
+            single internal EndOfEpochCommand, not the shard group's actual
+            per-block transaction commands, so there is no meaningful "command
+            count" to report from this endpoint. This is consistent with 0
+            rather than actively misleading, but is NOT the same "number of
+            Commands in the block body" semantic the column name might suggest.
+
+    ValidatorRow:
+      type: object
+      description: Mirrors `db.ValidatorRow` - the full validators table roster shape.
+      required:
+        - public_key
+        - last_seen_epoch
+        - shard_group_start
+        - shard_group_end_inclusive
+        - consensus_status
+        - last_checked_at
+      properties:
+        public_key:
+          type: string
+        last_seen_epoch:
+          type: integer
+          format: int64
+          minimum: 0
+        shard_group_start:
+          type: integer
+          format: int32
+          minimum: 0
+        shard_group_end_inclusive:
+          type: integer
+          format: int32
+          minimum: 0
+        consensus_status:
+          type: string
+          nullable: true
+          description: >-
+            From `tari_validator_node`'s JSON-RPC get_consensus_status (e.g.
+            "Running", "Syncing"), populated by internal/vnhealth. Null if that
+            validator has never been checked by vnhealth.
+        last_checked_at:
+          type: string
+          format: date-time
+
+    BurnClaim:
+      type: object
+      description: Mirrors `db.BurnClaim` - a single burn_claims tracking row.
+      required:
+        - l1_burn_tx_hash
+        - commitment
+        - claim_public_key
+        - burn_height
+        - claim_tx_id
+        - claimed_at
+        - status
+      properties:
+        l1_burn_tx_hash:
+          type: string
+          description: The L1 burn kernel's hash.
+        commitment:
+          type: string
+        claim_public_key:
+          type: string
+          nullable: true
+          description: >-
+            Always null coming from internal/burnclaim's L1 scanner - see
+            db.BurnClaim's own doc comment.
+        burn_height:
+          type: integer
+          format: int64
+          minimum: 0
+        claim_tx_id:
+          type: string
+          nullable: true
+          description: >-
+            Always null even once status='claimed' - the tombstone substate
+            lookup this repo uses to detect a claim doesn't expose an L2
+            transaction id.
+        claimed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            This repo's own OBSERVATION time of the claim, not a real upstream
+            claim timestamp - null until status='claimed'.
+        status:
+          type: string
+          enum: [pending, claimed, stuck]
+
+    ApiTemplateRegistryRow:
+      type: object
+      description: >-
+        Mirrors `apiTemplateRegistryRow` (the `/api/templates` DTO), NOT the raw
+        `db.TemplateRegistryRow` - see that Go type's own doc comment for the
+        Metadata/Definition inlining decision this schema reflects.
+      required:
+        - template_address
+        - template_name
+        - author_public_key
+        - binary_hash
+        - at_epoch
+        - metadata_hash
+        - author_friendly_name
+        - code_size
+        - is_featured
+        - metadata
+        - definition
+        - first_seen_at
+      properties:
+        template_address:
+          type: string
+        template_name:
+          type: string
+        author_public_key:
+          type: string
+        binary_hash:
+          type: string
+        at_epoch:
+          type: integer
+          format: int64
+          minimum: 0
+        metadata_hash:
+          type: string
+          nullable: true
+        author_friendly_name:
+          type: string
+          nullable: true
+          description: From the community metadata server; not present in the raw indexer catalogue.
+        code_size:
+          type: integer
+          format: int64
+          nullable: true
+        is_featured:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: >-
+            Arbitrary nested JSON from the community metadata server, inlined
+            directly (json.RawMessage) rather than base64-encoded or omitted.
+            Null (not `{}`) when never populated upstream - this repo doesn't
+            know which shape (object vs array) the metadata server would have
+            used, so null-for-genuinely-absent is the only honest
+            representation. Always present as a key, never omitted.
+        definition:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Same inlining/nullability behavior as `metadata`, above.
+        first_seen_at:
+          type: string
+          format: date-time
+          description: >-
+            Set only on initial INSERT - a re-observed template keeps its
+            original first_seen_at rather than having it bumped forward.
+
+    ApiValidatorEpochSummary:
+      type: object
+      required: [epoch, count]
+      properties:
+        epoch:
+          type: integer
+          format: int64
+          minimum: 0
+        count:
+          type: integer
+          minimum: 0
+
+    ApiTipInfo:
+      type: object
+      description: >-
+        Each field's sibling `<field>_error` is only present (omitted otherwise)
+        when that specific sub-query failed independently - one data source
+        erroring isn't reason to fail the whole response.
+      required:
+        - latest_block
+        - validator_epoch_summary
+        - stuck_burn_claims_count
+      properties:
+        latest_block:
+          allOf:
+            - $ref: "#/components/schemas/OotleBlock"
+          nullable: true
+          description: Null when the ootle_blocks table is empty, or when its own sub-query failed.
+        latest_block_error:
+          type: string
+          description: Present only when the latest-block sub-query itself failed.
+        validator_epoch_summary:
+          $ref: "#/components/schemas/ApiValidatorEpochSummary"
+        validator_epoch_summary_error:
+          type: string
+          description: Present only when the validator-epoch-summary sub-query itself failed.
+        stuck_burn_claims_count:
+          type: integer
+          minimum: 0
+        stuck_burn_claims_count_error:
+          type: string
+          description: Present only when the stuck-burn-claims-count sub-query itself failed.
+
+    ApiHealth:
+      type: object
+      required: [status, database]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Always "ok" - this reflects the HTTP process being up, not database health.
+        database:
+          type: string
+          enum: [reachable, degraded]
+        error:
+          type: string
+          description: Present only when database is "degraded" - describes the underlying query error.
