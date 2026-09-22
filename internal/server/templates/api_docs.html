@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark-mode">
 <head>
     <meta charset="UTF-8">
     <title>go-tari-ootle-explorer API docs</title>
@@ -8,6 +8,47 @@
         body { margin: 0; background: #0f0f12; }
         .topbar-link { color: #e6e6e6; font-family: monospace; padding: 0.6rem 1rem; display: block; background: #17171b; border-bottom: 1px solid #333; }
         .topbar-link a { color: #7cc7ff; }
+
+        /* Swagger UI dark-theme contrast fix.
+         *
+         * swagger-ui-dist@5's swagger-ui.css only ships a real dark palette behind
+         * an opt-in "dark-mode" class on <html> (confirmed by reading the real,
+         * fetched https://unpkg.com/swagger-ui-dist@5/swagger-ui.css - it's
+         * ~174 `html.dark-mode .swagger-ui ...` rules) - without it, most text
+         * (operation-summary descriptions, the Schemas/Models section, table
+         * cells, inputs) stays on the light theme's #3b4151 near-black text with
+         * no explicit background, which collides with this page's own
+         * `body { background: #0f0f12 }` override above and is unreadable. The
+         * class="dark-mode" attribute on <html> above turns that built-in dark
+         * theme on; the overrides below then retint swagger-ui-dist's own
+         * dark-mode colors (#1c2022/#2a2e30/#e4e6e6/#51a8ff/etc - confirmed via a
+         * real headless-browser render of this exact page) to this repo's own
+         * templates/layout.html palette (background #0f0f12, panel #17171b,
+         * border #333, primary text #e6e6e6, muted text #999, link #7cc7ff) so
+         * the embedded docs actually match this page's chrome instead of just
+         * "some other readable dark colors".
+         */
+        .swagger-ui { background: #0f0f12 !important; color: #e6e6e6 !important; }
+        .swagger-ui a { color: #7cc7ff !important; }
+        .swagger-ui select,
+        .swagger-ui input,
+        .swagger-ui textarea { background: #222 !important; color: #e6e6e6 !important; border: 1px solid #444 !important; }
+        /* Operation-summary description text (e.g. "List recently observed
+         * ootle_blocks rows" next to each GET row) - muted secondary text, same
+         * role as this repo's own table th/.panel h3 labels. */
+        .swagger-ui .opblock-summary-description { color: #999 !important; }
+        /* The "Servers" dropdown bar - swagger-ui-dist's .scheme-container ships
+         * a hardcoded white background even in dark-mode's light-theme fallback,
+         * and is otherwise still #1c2022 (close to, but not, this repo's panel
+         * color) under dark-mode. */
+        .swagger-ui .scheme-container { background: #17171b !important; box-shadow: none !important; }
+        .swagger-ui .servers-title { color: #999 !important; }
+        /* Schemas/Models section: the collapsible "Schemas" bar label and each
+         * expanded model's name/background. */
+        .swagger-ui section.models h4 span { color: #999 !important; }
+        .swagger-ui .model-title { color: #e6e6e6 !important; }
+        .swagger-ui .model-container,
+        .swagger-ui .model-box { background: #17171b !important; border-color: #333 !important; }
     </style>
 </head>
 <body>
